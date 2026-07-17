@@ -1,58 +1,71 @@
 *&---------------------------------------------------------------------*
-*& Include          ZAB_R2R_SALES_REPORT_NT_CLS
+*& Include ZAB_R2R_SALES_REPORT_NT_CLS
 *&---------------------------------------------------------------------*
-*-- 1. Class definition to handle the event
-CLASS lcl_handle_events DEFINITION.
+
+CLASS lcl_events DEFINITION.
   PUBLIC SECTION.
-    METHODS on_added_function FOR EVENT added_function OF cl_salv_events_table
+    METHODS on_added_function
+      FOR EVENT added_function OF cl_salv_events_table
       IMPORTING e_salv_function.
 ENDCLASS.
 
-*-- 2. Class implementation
-CLASS lcl_handle_events IMPLEMENTATION.
+CLASS lcl_events IMPLEMENTATION.
   METHOD on_added_function.
-    IF e_salv_function = 'EDAT' OR e_salv_function = 'ECSV'.
-      " Button code
-      " Your logic here
-      CONSTANTS lv_title TYPE String VALUE 'File Save Dialog' ##NO_TEXT.
-      CONSTANTS lv_fileext TYPE String VALUE 'TXT' ##NO_TEXT.
-      CONSTANTS lv_filefilter TYPE String VALUE 'All Files (*.*)|*.*|Text file (*.txt)|*.txt|Data file (*.dat)|*.dat|CSV (Comma delimited) (*.csv)|*.csv|Excel file (*.xls)|*.xls' ##NO_TEXT.
-      DATA:
-        gv_filename          TYPE string,
-        gv_path              TYPE string,
-        gv_fullpath          TYPE string,
-        lv_separator         TYPE c,
-        gv_default_file_name TYPE string.
 
-      IF e_salv_function = 'EDAT'.
-        gv_default_file_name = 'Sales_Trade_Summary.dat' . ##NO_TEXT.
-      ELSE.
-        gv_default_file_name = 'Sales_Trade_Summary.csv' . ##NO_TEXT.
+    CONSTANTS:
+      lc_title  TYPE string VALUE 'Save File',
+      lc_filter TYPE string
+        VALUE 'All Files (*.*)|*.*|Data (*.dat)|*.dat|CSV (*.csv)|*.csv|Excel (*.xls)|*.xls'.
+
+    DATA:
+      lv_filename  TYPE string,
+      lv_path      TYPE string,
+      lv_fullpath  TYPE string,
+      lv_ext       TYPE string,
+      lv_defname   TYPE string,
+      lv_separator TYPE c.
+
+    CASE e_salv_function.
+      WHEN 'EDAT'.
+        lv_defname   = 'Sales_NonTrade_Summary.dat'.
+        lv_ext       = 'DAT'.
+        lv_separator = space.
+      WHEN 'ECSV'.
+        lv_defname   = 'Sales_NonTrade_Summary.csv'.
+        lv_ext       = 'CSV'.
         lv_separator = ','.
-      ENDIF.
+      WHEN 'EXLS'.
+        lv_defname   = 'Sales_NonTrade_Summary.xls'.
+        lv_ext       = 'XLS'.
+        lv_separator = cl_abap_char_utilities=>horizontal_tab.
+      WHEN OTHERS.
+        RETURN.
+    ENDCASE.
 
-      PERFORM get_filedata.
+    PERFORM get_filedata.
 
-      CALL METHOD cl_gui_frontend_services=>file_save_dialog
-        EXPORTING
-          window_title      = lv_title
-          default_extension = lv_fileext
-          default_file_name = gv_default_file_name
-          file_filter       = lv_filefilter
-        CHANGING
-          filename          = gv_filename
-          path              = gv_path
-          fullpath          = gv_fullpath.
+    cl_gui_frontend_services=>file_save_dialog(
+      EXPORTING
+        window_title      = lc_title
+        default_extension = lv_ext
+        default_file_name = lv_defname
+        file_filter       = lc_filter
+      CHANGING
+        filename  = lv_filename
+        path      = lv_path
+        fullpath  = lv_fullpath
+      EXCEPTIONS OTHERS = 1 ).
 
-      IF gv_fullpath IS NOT INITIAL.
-        CALL METHOD cl_gui_frontend_services=>gui_download
-          EXPORTING
-            filename              = gv_fullpath
-            filetype              = 'ASC'
-            write_field_separator = lv_separator
-          CHANGING
-            data_tab              = gt_out_tab.
-      ENDIF.
-    ENDIF.
+    CHECK lv_fullpath IS NOT INITIAL.
+
+    cl_gui_frontend_services=>gui_download(
+      EXPORTING
+        filename              = lv_fullpath
+        filetype              = 'ASC'
+        write_field_separator = lv_separator
+      CHANGING
+        data_tab = gt_out_tab
+      EXCEPTIONS OTHERS = 1 ).
+
   ENDMETHOD.
 ENDCLASS.

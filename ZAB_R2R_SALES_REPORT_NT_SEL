@@ -1,20 +1,30 @@
 *&---------------------------------------------------------------------*
-*& Include          ZAB_R2R_SALES_REPORT_NT_SEL
+*& Include ZAB_R2R_SALES_REPORT_NT_SEL
 *&---------------------------------------------------------------------*
-TYPES: BEGIN OF lty_acdoca,
+
+TYPES: BEGIN OF lty_sel,
          budat TYPE budat,
          kunnr TYPE kunnr,
-       END OF lty_acdoca.
+       END OF lty_sel.
+DATA ls_sel TYPE lty_sel.
 
-DATA ls_acdoca TYPE lty_acdoca.
-
-SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME.
-  PARAMETERS p_bukrs TYPE bukrs OBLIGATORY.
-
-  SELECT-OPTIONS: s_budat FOR ls_acdoca-budat OBLIGATORY,
-                  s_kunnr FOR ls_acdoca-kunnr.
-
-  PARAMETERS p_gjahr TYPE gjahr OBLIGATORY.
-  SELECTION-SCREEN SKIP.
-  PARAMETERS p_check AS CHECKBOX TYPE c.
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+  PARAMETERS:    p_bukrs TYPE bukrs OBLIGATORY.
+  SELECT-OPTIONS s_budat FOR ls_sel-budat OBLIGATORY NO INTERVALS.
+  PARAMETERS:    p_gjahr TYPE gjahr OBLIGATORY.
+  SELECT-OPTIONS s_kunnr FOR ls_sel-kunnr.
 SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
+  PARAMETERS:
+    p_sj RADIOBUTTON GROUP rout DEFAULT 'X' USER-COMMAND ucom,
+    p_sl RADIOBUTTON GROUP rout,
+    p_dl RADIOBUTTON GROUP rout.
+SELECTION-SCREEN END OF BLOCK b2.
+
+"--- Text elements required:
+"    TEXT-001 = 'Selection Parameters'
+"    TEXT-002 = 'Output Options'
+"    p_sj label = 'Sales Journal'
+"    p_sl label = 'Summary List of Sales'
+"    p_dl label = 'Detailed List'

@@ -1,9 +1,19 @@
 *&---------------------------------------------------------------------*
-*& Include          ZAB_R2R_SALES_REPORT_NT_E01
+*& Include ZAB_R2R_SALES_REPORT_NT_E01
 *&---------------------------------------------------------------------*
 
 START-OF-SELECTION.
 
+  " Derive report mode from radio button selection
+  gv_mode = COND #(
+    WHEN p_sj = abap_true THEN gc_sj
+    WHEN p_sl = abap_true THEN gc_sl
+    ELSE                       gc_dl ).
+
   PERFORM get_data.
-  PERFORM buildfieldcat.
+
+  CHECK gt_output IS NOT INITIAL.
+
+  PERFORM write_log USING gv_mode.
+
   PERFORM display_alv.

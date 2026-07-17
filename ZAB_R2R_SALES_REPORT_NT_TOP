@@ -1,126 +1,199 @@
 *&---------------------------------------------------------------------*
-*& Include          ZAB_R2R_SALES_REPORT_NT_TOP
+*& Include ZAB_R2R_SALES_REPORT_NT_TOP
 *&---------------------------------------------------------------------*
 
-TYPES: BEGIN OF ty_column,
-         fieldname TYPE lvc_fname,
-         coltext   TYPE scrtext_l,
-         coltext_m TYPE scrtext_m,
-         coltext_s TYPE scrtext_s,
-       END OF ty_column,
+"--- Report output mode constants ---
+CONSTANTS:
+  gc_sj TYPE char2 VALUE 'SJ',   " Sales Journal
+  gc_sl TYPE char2 VALUE 'SL',   " Summary List
+  gc_dl TYPE char2 VALUE 'DL'.   " Detailed List
 
-       BEGIN OF ty_head,
-         fieldname TYPE string,
-         coltext   TYPE string,
-       END OF ty_head,
+"--- Type definitions ---
+TYPES:
+  " Journal entry header (from I_JournalEntry)
+  BEGIN OF ty_bkpf,
+    bukrs TYPE bukrs,
+    belnr TYPE belnr_d,
+    gjahr TYPE gjahr,
+    blart TYPE blart,
+    budat TYPE budat,
+    bldat TYPE budat,
+    bktxt TYPE bktxt,
+    xblnr TYPE xblnr1,
+    bupla TYPE bupla,
+  END OF ty_bkpf,
 
-       BEGIN OF ty_gls,
-         bukrs TYPE bukrs,
-         belnr TYPE belnr_d,
-         gjahr TYPE gjahr,
-         racct TYPE racct,
-         sum_g TYPE fins_vhcur12,
-       END OF ty_gls,
+  " Journal entry line item (from I_JournalEntryItem)
+  BEGIN OF ty_acdoca,
+    rbukrs   TYPE bukrs,
+    belnr    TYPE belnr_d,
+    gjahr    TYPE gjahr,
+    docln    TYPE char6,
+    kunnr    TYPE kunnr,
+    waers    TYPE waers,
+    drcrk    TYPE shkzg,
+    budat    TYPE budat,
+    racct    TYPE racct,
+    sgtxt    TYPE sgtxt,
+    mwskz    TYPE mwskz,
+    bschl    TYPE bschl,
+    prctr    TYPE prctr,
+    hsl      TYPE wrbtr,
+    linetype TYPE char5,
+    vkorg    TYPE vkorg,
+    vtweg    TYPE vtweg,
+    spart    TYPE spart,
+  END OF ty_acdoca,
 
-       BEGIN OF ty_summary,
-         budat                 TYPE string,
-         tin                   TYPE string,
-         reg_name(30)          TYPE c,
-         address1              TYPE string,
-         address2              TYPE string,
-         waers                 TYPE string,
-         total_amt             TYPE wrbtr,
-         revenue               TYPE wrbtr,
-         fcda                  TYPE wrbtr,
-         nft                   TYPE wrbtr,
-         lft                   TYPE wrbtr,
-         vat                   TYPE wrbtr,
-         discount              TYPE wrbtr,
-         bktxt                 TYPE string,
-         reference(30)         TYPE c,
-         belnr                 TYPE belnr_d,
-         invoice_no            TYPE xblnr,
-         dm_no                 TYPE string,
-         notq_vat              TYPE wrbtr,
-         exempt                TYPE wrbtr,
-         zero_rated            TYPE wrbtr,
-         taxable_net           TYPE wrbtr,
-         output_vat            TYPE wrbtr,
-         total_sales           TYPE wrbtr,
-         gross_tax             TYPE wrbtr,
-         invoice_dm_date       TYPE dats,
-         bill_period           TYPE string,
-         posting_key           TYPE bschl,
-         document_type         TYPE blart,
-         vat_code              TYPE string,
-         wht_code              TYPE string,
-         business_partner_code TYPE string,
-         bukrs                 TYPE bukrs,
-         bupla                 TYPE bupla,
-         vkbur                 TYPE vkbur,
-         prctr                 TYPE prctr,
-         hkont                 TYPE hkont,
+  " GL account balance sheet indicator (from I_GLAccount)
+  BEGIN OF ty_gl_master,
+    racct TYPE racct,
+    xbilk TYPE xbilk,   " X = balance sheet, ' ' = P&L
+  END OF ty_gl_master,
 
-       END OF ty_summary.
+  " GL account text
+  BEGIN OF ty_gl_text,
+    racct  TYPE racct,
+    text20 TYPE text20,
+  END OF ty_gl_text,
+
+  " GL account classification from zdt_r2r_fl_gls
+  BEGIN OF ty_gl_class,
+    gl_account TYPE saknr,
+    identifier TYPE char10,
+  END OF ty_gl_class,
+
+  " Business Partner TIN (IS-U: dfkkbptaxnum)
+  BEGIN OF ty_tax,
+    partner TYPE bu_partner,
+    taxnum  TYPE dfkkbptaxnum-taxnum,
+  END OF ty_tax,
+
+  " BP address assignment (but020)
+  BEGIN OF ty_bp_addr,
+    partner    TYPE bu_partner,
+    addrnumber TYPE adrnr,
+  END OF ty_bp_addr,
+
+  " Address data (adrc)
+  BEGIN OF ty_adrc,
+    addrnumber TYPE adrnr,
+    name1      TYPE ad_name1,
+    name2      TYPE ad_name2,
+    name3      TYPE ad_name3,
+    name4      TYPE ad_name4,
+    street     TYPE ad_street,
+    str_suppl1 TYPE ad_strspp1,
+    str_suppl2 TYPE ad_strspp2,
+    str_suppl3 TYPE ad_strspp3,
+    location   TYPE ad_lcity2,
+    city1      TYPE ad_city1,
+  END OF ty_adrc,
+
+  " Customer sales area (from I_CustomerSalesArea)
+  BEGIN OF ty_knvv,
+    kunnr TYPE kunnr,
+    vkorg TYPE vkorg,
+    vtweg TYPE vtweg,
+    spart TYPE spart,
+    vkbur TYPE vkbur,
+  END OF ty_knvv,
+
+  " Master output structure -- covers all 3 report modes
+  BEGIN OF ty_output,
+    " Common (all modes)
+    budat          TYPE string,
+    tin            TYPE string,
+    reg_name       TYPE string,
+    address1       TYPE string,
+    address2       TYPE string,
+    " Sales Journal specific (columns C-S)
+    total_amt      TYPE wrbtr,
+    non_revenue    TYPE wrbtr,
+    revenue        TYPE wrbtr,
+    nft            TYPE wrbtr,
+    lft            TYPE wrbtr,
+    vat_amt        TYPE wrbtr,
+    discount       TYPE wrbtr,
+    bktxt          TYPE string,
+    reference      TYPE string,
+    belnr          TYPE belnr_d,
+    invoice_no     TYPE xblnr1,
+    dm_no          TYPE string,
+    " Summary List specific (columns T-AA)
+    notq_vat       TYPE wrbtr,
+    exempt         TYPE wrbtr,
+    zero_rated     TYPE wrbtr,
+    taxable_net    TYPE wrbtr,
+    output_vat     TYPE wrbtr,
+    total_sales    TYPE wrbtr,
+    gross_tax      TYPE wrbtr,
+    " Detailed List additional fields
+    inv_dm_date    TYPE string,
+    bill_period    TYPE string,
+    posting_key    TYPE bschl,
+    document_type  TYPE blart,
+    vat_code       TYPE mwskz,
+    wht_code       TYPE string,    " always blank per FS assumption D
+    bp_code        TYPE kunnr,
+    bukrs          TYPE bukrs,
+    bupla          TYPE bupla,
+    sales_office   TYPE vkbur,
+    prctr          TYPE prctr,
+    ar_gl_no       TYPE saknr,
+    ar_gl_name     TYPE string,
+    cr_gl_no       TYPE saknr,
+    cr_gl_name     TYPE string,
+  END OF ty_output,
+
+  " Execution log (written to ZAB_R2R_SALES_LOG)
+  BEGIN OF ty_log,
+    mandt         TYPE mandt,
+    bukrs         TYPE bukrs,
+    budat_from    TYPE budat,
+    budat_to      TYPE budat,
+    gjahr         TYPE gjahr,
+    kunnr         TYPE kunnr,
+    output_option TYPE char5,
+    usnam         TYPE syuname,
+    cpudt         TYPE sydatum,
+    cputm         TYPE syuzeit,
+  END OF ty_log,
+
+  " Field catalog entry for column label assignment
+  BEGIN OF ty_fieldcat,
+    fieldname  TYPE lvc_fname,
+    coltext_l  TYPE scrtext_l,
+    coltext_m  TYPE scrtext_m,
+    coltext_s  TYPE scrtext_s,
+  END OF ty_fieldcat.
+
+"--- Sorted table types for binary-search lookups ---
+TYPES:
+  ty_bkpf_tab   TYPE SORTED TABLE OF ty_bkpf    WITH UNIQUE KEY bukrs belnr gjahr,
+  ty_acdoca_tab TYPE STANDARD TABLE OF ty_acdoca WITH EMPTY KEY,
+  ty_gl_cls_tab TYPE SORTED TABLE OF ty_gl_class WITH NON-UNIQUE KEY gl_account identifier,
+  ty_gl_mst_tab TYPE SORTED TABLE OF ty_gl_master WITH UNIQUE KEY racct,
+  ty_gl_txt_tab TYPE SORTED TABLE OF ty_gl_text   WITH UNIQUE KEY racct,
+  ty_tax_tab    TYPE SORTED TABLE OF ty_tax       WITH NON-UNIQUE KEY partner,
+  ty_addr_tab   TYPE SORTED TABLE OF ty_bp_addr   WITH NON-UNIQUE KEY partner,
+  ty_adrc_tab   TYPE SORTED TABLE OF ty_adrc      WITH UNIQUE KEY addrnumber,
+  ty_knvv_tab   TYPE SORTED TABLE OF ty_knvv      WITH NON-UNIQUE KEY kunnr vkorg vtweg spart.
+
+"--- TVARVC range types ---
+TYPES:
+  ty_r_racct TYPE RANGE OF racct,
+  ty_r_mwskz TYPE RANGE OF mwskz.
+
+"--- Global variables ---
+DATA:
+  gt_output   TYPE STANDARD TABLE OF ty_output WITH EMPTY KEY,
+  gt_out_tab  TYPE string_table,    " formatted lines for file download
+  gt_creaflow TYPE STANDARD TABLE OF l_s_creaflow WITH EMPTY KEY,
+  gv_mode     TYPE char2.           " gc_sj / gc_sl / gc_dl
 
 TYPES:
   BEGIN OF l_s_creaflow,
     string TYPE string,
     label  TYPE char1,
-  END OF l_s_creaflow .
-TYPES:
-  l_t_creaflow TYPE STANDARD TABLE OF l_s_creaflow .
-
-
-DATA : gt_data     TYPE TABLE OF ty_column,
-       gt_summary  TYPE TABLE OF ty_summary,
-       gt_out      TYPE TABLE OF string,
-       gt_head     TYPE TABLE OF ty_head,
-       gt_out_tab  TYPE string_Table,
-       gt_gls      TYPE TABLE OF ty_gls,
-       gs_gls      TYPE ty_gls,
-       gv_temp     TYPE i,
-       gt_creaflow TYPE l_t_creaflow.
-
-FIELD-SYMBOLS: <gt_data> TYPE STANDARD TABLE,
-               <gs_line> TYPE any.
-
-
-gt_data = VALUE #(
-  ( fieldname = 'BUDAT'                coltext = 'Posting Date'                  coltext_m = 'Post Date'      coltext_s = 'Pst.Dt' )
-  ( fieldname = 'TIN'                  coltext = 'TIN'                           coltext_m = 'TIN'            coltext_s = 'TIN' )
-  ( fieldname = 'REG_NAME'             coltext = 'Registered Name'               coltext_m = 'Reg. Name'      coltext_s = 'Reg.Nm' )
-  ( fieldname = 'ADDRESS1'             coltext = 'Address'                       coltext_m = 'Address'        coltext_s = 'Addr1' )
-  ( fieldname = 'ADDRESS2'             coltext = 'Address 2'                     coltext_m = 'Address 2'      coltext_s = 'Addr2' )
-  ( fieldname = 'CURRENCY'             coltext = 'Currency'                      coltext_m = 'Currency'       coltext_s = 'Curr' )
-  ( fieldname = 'TOTAL_AMT'            coltext = 'Total Amount'                  coltext_m = 'Total Amt'      coltext_s = 'Tot.Am' )
-  ( fieldname = 'REVENUE'              coltext = 'Revenue'                       coltext_m = 'Revenue'        coltext_s = 'Rev' )
-  ( fieldname = 'FCDA'                 coltext = 'FCDA'                          coltext_m = 'FCDA'           coltext_s = 'FCDA' )
-  ( fieldname = 'NFT'                  coltext = 'NFT'                           coltext_m = 'NFT'            coltext_s = 'NFT' )
-  ( fieldname = 'LFT'                  coltext = 'LFT'                           coltext_m = 'LFT'            coltext_s = 'LFT' )
-  ( fieldname = 'VAT'                  coltext = 'VAT'                           coltext_m = 'VAT'            coltext_s = 'VAT' )
-  ( fieldname = 'DISCOUNT'             coltext = 'Discount'                      coltext_m = 'Discount'       coltext_s = 'Disc' )
-  ( fieldname = 'BKTXT'                coltext = 'Header Text'                   coltext_m = 'Hdr Text'       coltext_s = 'HdrTx' )
-  ( fieldname = 'REFERENCE'            coltext = 'Reference'                     coltext_m = 'Reference'      coltext_s = 'Ref' )
-  ( fieldname = 'BELNR'                coltext = 'Document Number'               coltext_m = 'Doc Number'     coltext_s = 'DocNo' )
-  ( fieldname = 'INVOICE_NO'           coltext = 'Invoice Number'                coltext_m = 'Invoice No'     coltext_s = 'InvNo' )
-  ( fieldname = 'DM_NO'                coltext = 'Debit Memo Number'             coltext_m = 'DM Number'      coltext_s = 'DMNo' )
-  ( fieldname = 'NOTQ_VAT'             coltext = 'Not Qualified Output VAT'      coltext_m = 'NotQual VAT'    coltext_s = 'NQVat' )
-  ( fieldname = 'EXEMPT'               coltext = 'Exempt'                        coltext_m = 'Exempt'         coltext_s = 'Exmpt' )
-  ( fieldname = 'ZERO_RATED'           coltext = 'Zero Rated'                    coltext_m = 'Zero Rated'     coltext_s = 'ZroRt' )
-  ( fieldname = 'TAX_NET'              coltext = 'Taxable Net of VAT'            coltext_m = 'Tax Net VAT'    coltext_s = 'TxNet' )
-  ( fieldname = 'OUTPUT_VAT'           coltext = 'Output VAT'                    coltext_m = 'Output VAT'     coltext_s = 'OutVT' )
-  ( fieldname = 'TOTAL_SALES'          coltext = 'Total Sales'                   coltext_m = 'Total Sales'    coltext_s = 'TotSl' )
-  ( fieldname = 'GROSS_TAX'            coltext = 'Gross Taxable'                 coltext_m = 'Gross Tax'      coltext_s = 'GrsTx' )
-  ( fieldname = 'INVOICE_DM_DATE'      coltext = 'Invoice/Debit Memo Date'       coltext_m = 'Inv/DM Date'    coltext_s = 'InvDt' )
-  ( fieldname = 'BILLING_PERIOD'       coltext = 'Bill Period'                   coltext_m = 'Bill Period'    coltext_s = 'BillP' )
-  ( fieldname = 'POSTING_KEY'          coltext = 'Posting Key'                   coltext_m = 'Post Key'       coltext_s = 'PstKy' )
-  ( fieldname = 'DOCUMENT_TYPE'        coltext = 'Document Type'                 coltext_m = 'Doc Type'       coltext_s = 'DcTyp' )
-  ( fieldname = 'VAT_CODE'             coltext = 'VAT Code'                      coltext_m = 'VAT Code'       coltext_s = 'VATCd' )
-  ( fieldname = 'WHT_CODE'             coltext = 'WHT Code'                      coltext_m = 'WHT Code'       coltext_s = 'WHTCd' )
-  ( fieldname = 'BUSINESS_PARTNER_CODE' coltext = 'Business Partner Code'        coltext_m = 'BP Code'        coltext_s = 'BPCd' )
-  ( fieldname = 'BUKRS'                coltext = 'Company Code'                  coltext_m = 'Comp Code'      coltext_s = 'CoCd' )
-  ( fieldname = 'BUPLA'                coltext = 'Business Place'                coltext_m = 'Bus Place'      coltext_s = 'BusPl' )
-  ( fieldname = 'SALES_OFF'            coltext = 'Sales Office'                  coltext_m = 'Sales Off'      coltext_s = 'SlsOf' )
-  ( fieldname = 'PRCTR'                coltext = 'Profit Center'                 coltext_m = 'Prof Center'    coltext_s = 'PrCtr' )
-).
+  END OF l_s_creaflow.

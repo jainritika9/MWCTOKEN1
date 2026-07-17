@@ -1,0 +1,20 @@
+*&---------------------------------------------------------------------*
+*& Include          ZAB_R2R_SALES_REPORT_NT_SEL
+*&---------------------------------------------------------------------*
+TYPES: BEGIN OF lty_acdoca,
+         budat TYPE budat,
+         kunnr TYPE kunnr,
+       END OF lty_acdoca.
+
+DATA ls_acdoca TYPE lty_acdoca.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME.
+  PARAMETERS p_bukrs TYPE bukrs OBLIGATORY.
+
+  SELECT-OPTIONS: s_budat FOR ls_acdoca-budat OBLIGATORY,
+                  s_kunnr FOR ls_acdoca-kunnr.
+
+  PARAMETERS p_gjahr TYPE gjahr OBLIGATORY.
+  SELECTION-SCREEN SKIP.
+  PARAMETERS p_check AS CHECKBOX TYPE c.
+SELECTION-SCREEN END OF BLOCK b1.

@@ -1,0 +1,12 @@
+*&---------------------------------------------------------------------*
+*& Report ZAB_R2R_SALES_REPORT_NON_TRADE
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zab_r2r_sales_report_non_trade.
+
+INCLUDE zab_r2r_sales_report_nt_top.
+INCLUDE zab_r2r_sales_report_nt_sel.
+INCLUDE zab_r2r_sales_report_nt_cls.
+INCLUDE zab_r2r_sales_report_nt_f01.
+INCLUDE zab_r2r_sales_report_nt_e01.

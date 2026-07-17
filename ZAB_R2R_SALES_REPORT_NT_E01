@@ -1,0 +1,9 @@
+*&---------------------------------------------------------------------*
+*& Include          ZAB_R2R_SALES_REPORT_NT_E01
+*&---------------------------------------------------------------------*
+
+START-OF-SELECTION.
+
+  PERFORM get_data.
+  PERFORM buildfieldcat.
+  PERFORM display_alv.

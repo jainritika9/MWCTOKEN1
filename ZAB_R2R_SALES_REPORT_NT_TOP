@@ -1,0 +1,126 @@
+*&---------------------------------------------------------------------*
+*& Include          ZAB_R2R_SALES_REPORT_NT_TOP
+*&---------------------------------------------------------------------*
+
+TYPES: BEGIN OF ty_column,
+         fieldname TYPE lvc_fname,
+         coltext   TYPE scrtext_l,
+         coltext_m TYPE scrtext_m,
+         coltext_s TYPE scrtext_s,
+       END OF ty_column,
+
+       BEGIN OF ty_head,
+         fieldname TYPE string,
+         coltext   TYPE string,
+       END OF ty_head,
+
+       BEGIN OF ty_gls,
+         bukrs TYPE bukrs,
+         belnr TYPE belnr_d,
+         gjahr TYPE gjahr,
+         racct TYPE racct,
+         sum_g TYPE fins_vhcur12,
+       END OF ty_gls,
+
+       BEGIN OF ty_summary,
+         budat                 TYPE string,
+         tin                   TYPE string,
+         reg_name(30)          TYPE c,
+         address1              TYPE string,
+         address2              TYPE string,
+         waers                 TYPE string,
+         total_amt             TYPE wrbtr,
+         revenue               TYPE wrbtr,
+         fcda                  TYPE wrbtr,
+         nft                   TYPE wrbtr,
+         lft                   TYPE wrbtr,
+         vat                   TYPE wrbtr,
+         discount              TYPE wrbtr,
+         bktxt                 TYPE string,
+         reference(30)         TYPE c,
+         belnr                 TYPE belnr_d,
+         invoice_no            TYPE xblnr,
+         dm_no                 TYPE string,
+         notq_vat              TYPE wrbtr,
+         exempt                TYPE wrbtr,
+         zero_rated            TYPE wrbtr,
+         taxable_net           TYPE wrbtr,
+         output_vat            TYPE wrbtr,
+         total_sales           TYPE wrbtr,
+         gross_tax             TYPE wrbtr,
+         invoice_dm_date       TYPE dats,
+         bill_period           TYPE string,
+         posting_key           TYPE bschl,
+         document_type         TYPE blart,
+         vat_code              TYPE string,
+         wht_code              TYPE string,
+         business_partner_code TYPE string,
+         bukrs                 TYPE bukrs,
+         bupla                 TYPE bupla,
+         vkbur                 TYPE vkbur,
+         prctr                 TYPE prctr,
+         hkont                 TYPE hkont,
+
+       END OF ty_summary.
+
+TYPES:
+  BEGIN OF l_s_creaflow,
+    string TYPE string,
+    label  TYPE char1,
+  END OF l_s_creaflow .
+TYPES:
+  l_t_creaflow TYPE STANDARD TABLE OF l_s_creaflow .
+
+
+DATA : gt_data     TYPE TABLE OF ty_column,
+       gt_summary  TYPE TABLE OF ty_summary,
+       gt_out      TYPE TABLE OF string,
+       gt_head     TYPE TABLE OF ty_head,
+       gt_out_tab  TYPE string_Table,
+       gt_gls      TYPE TABLE OF ty_gls,
+       gs_gls      TYPE ty_gls,
+       gv_temp     TYPE i,
+       gt_creaflow TYPE l_t_creaflow.
+
+FIELD-SYMBOLS: <gt_data> TYPE STANDARD TABLE,
+               <gs_line> TYPE any.
+
+
+gt_data = VALUE #(
+  ( fieldname = 'BUDAT'                coltext = 'Posting Date'                  coltext_m = 'Post Date'      coltext_s = 'Pst.Dt' )
+  ( fieldname = 'TIN'                  coltext = 'TIN'                           coltext_m = 'TIN'            coltext_s = 'TIN' )
+  ( fieldname = 'REG_NAME'             coltext = 'Registered Name'               coltext_m = 'Reg. Name'      coltext_s = 'Reg.Nm' )
+  ( fieldname = 'ADDRESS1'             coltext = 'Address'                       coltext_m = 'Address'        coltext_s = 'Addr1' )
+  ( fieldname = 'ADDRESS2'             coltext = 'Address 2'                     coltext_m = 'Address 2'      coltext_s = 'Addr2' )
+  ( fieldname = 'CURRENCY'             coltext = 'Currency'                      coltext_m = 'Currency'       coltext_s = 'Curr' )
+  ( fieldname = 'TOTAL_AMT'            coltext = 'Total Amount'                  coltext_m = 'Total Amt'      coltext_s = 'Tot.Am' )
+  ( fieldname = 'REVENUE'              coltext = 'Revenue'                       coltext_m = 'Revenue'        coltext_s = 'Rev' )
+  ( fieldname = 'FCDA'                 coltext = 'FCDA'                          coltext_m = 'FCDA'           coltext_s = 'FCDA' )
+  ( fieldname = 'NFT'                  coltext = 'NFT'                           coltext_m = 'NFT'            coltext_s = 'NFT' )
+  ( fieldname = 'LFT'                  coltext = 'LFT'                           coltext_m = 'LFT'            coltext_s = 'LFT' )
+  ( fieldname = 'VAT'                  coltext = 'VAT'                           coltext_m = 'VAT'            coltext_s = 'VAT' )
+  ( fieldname = 'DISCOUNT'             coltext = 'Discount'                      coltext_m = 'Discount'       coltext_s = 'Disc' )
+  ( fieldname = 'BKTXT'                coltext = 'Header Text'                   coltext_m = 'Hdr Text'       coltext_s = 'HdrTx' )
+  ( fieldname = 'REFERENCE'            coltext = 'Reference'                     coltext_m = 'Reference'      coltext_s = 'Ref' )
+  ( fieldname = 'BELNR'                coltext = 'Document Number'               coltext_m = 'Doc Number'     coltext_s = 'DocNo' )
+  ( fieldname = 'INVOICE_NO'           coltext = 'Invoice Number'                coltext_m = 'Invoice No'     coltext_s = 'InvNo' )
+  ( fieldname = 'DM_NO'                coltext = 'Debit Memo Number'             coltext_m = 'DM Number'      coltext_s = 'DMNo' )
+  ( fieldname = 'NOTQ_VAT'             coltext = 'Not Qualified Output VAT'      coltext_m = 'NotQual VAT'    coltext_s = 'NQVat' )
+  ( fieldname = 'EXEMPT'               coltext = 'Exempt'                        coltext_m = 'Exempt'         coltext_s = 'Exmpt' )
+  ( fieldname = 'ZERO_RATED'           coltext = 'Zero Rated'                    coltext_m = 'Zero Rated'     coltext_s = 'ZroRt' )
+  ( fieldname = 'TAX_NET'              coltext = 'Taxable Net of VAT'            coltext_m = 'Tax Net VAT'    coltext_s = 'TxNet' )
+  ( fieldname = 'OUTPUT_VAT'           coltext = 'Output VAT'                    coltext_m = 'Output VAT'     coltext_s = 'OutVT' )
+  ( fieldname = 'TOTAL_SALES'          coltext = 'Total Sales'                   coltext_m = 'Total Sales'    coltext_s = 'TotSl' )
+  ( fieldname = 'GROSS_TAX'            coltext = 'Gross Taxable'                 coltext_m = 'Gross Tax'      coltext_s = 'GrsTx' )
+  ( fieldname = 'INVOICE_DM_DATE'      coltext = 'Invoice/Debit Memo Date'       coltext_m = 'Inv/DM Date'    coltext_s = 'InvDt' )
+  ( fieldname = 'BILLING_PERIOD'       coltext = 'Bill Period'                   coltext_m = 'Bill Period'    coltext_s = 'BillP' )
+  ( fieldname = 'POSTING_KEY'          coltext = 'Posting Key'                   coltext_m = 'Post Key'       coltext_s = 'PstKy' )
+  ( fieldname = 'DOCUMENT_TYPE'        coltext = 'Document Type'                 coltext_m = 'Doc Type'       coltext_s = 'DcTyp' )
+  ( fieldname = 'VAT_CODE'             coltext = 'VAT Code'                      coltext_m = 'VAT Code'       coltext_s = 'VATCd' )
+  ( fieldname = 'WHT_CODE'             coltext = 'WHT Code'                      coltext_m = 'WHT Code'       coltext_s = 'WHTCd' )
+  ( fieldname = 'BUSINESS_PARTNER_CODE' coltext = 'Business Partner Code'        coltext_m = 'BP Code'        coltext_s = 'BPCd' )
+  ( fieldname = 'BUKRS'                coltext = 'Company Code'                  coltext_m = 'Comp Code'      coltext_s = 'CoCd' )
+  ( fieldname = 'BUPLA'                coltext = 'Business Place'                coltext_m = 'Bus Place'      coltext_s = 'BusPl' )
+  ( fieldname = 'SALES_OFF'            coltext = 'Sales Office'                  coltext_m = 'Sales Off'      coltext_s = 'SlsOf' )
+  ( fieldname = 'PRCTR'                coltext = 'Profit Center'                 coltext_m = 'Prof Center'    coltext_s = 'PrCtr' )
+).

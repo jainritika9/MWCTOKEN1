@@ -14,6 +14,8 @@ FORM get_data.
 
   "--- 1. Read TVARVC configuration for all ZSALES_* keys (single SELECT) ---
   DATA lt_tvarvc TYPE STANDARD TABLE OF tvarvc WITH EMPTY KEY.
+  DATA ls_rng TYPE rsdsselopt.
+
   SELECT *
     FROM tvarvc
     INTO TABLE @lt_tvarvc
@@ -33,11 +35,12 @@ FORM get_data.
     lr_taxnvat    TYPE ty_r_mwskz.
 
   LOOP AT lt_tvarvc ASSIGNING FIELD-SYMBOL(<tv>).
-    DATA(ls_rng) = VALUE rseloption(
+    ls_rng = VALUE #(
       sign   = <tv>-sign
       option = <tv>-opti
       low    = <tv>-low
       high   = <tv>-high ).
+
     CASE <tv>-name.
       WHEN 'ZSALES_NONTRADEGL'. APPEND ls_rng TO lr_nontradegl.
       WHEN 'ZSALES_NFT'.        APPEND ls_rng TO lr_nft.
@@ -71,7 +74,7 @@ FORM get_data.
     FROM I_JournalEntryItem
     INTO CORRESPONDING FIELDS OF TABLE @lt_doc_keys
     WHERE CompanyCode       = @p_bukrs
-      AND FiscalYear        = @p_gjahr
+*      AND FiscalYear        = @p_gjahr
       AND PostingDate       IN @s_budat
       AND GLAccount         IN @lr_nontradegl
       AND Customer          IN @s_kunnr
@@ -127,8 +130,8 @@ FORM get_data.
          PostingDate                  AS budat,
          DocumentDate                 AS bldat,
          AccountingDocumentHeaderText AS bktxt,
-         AlternativeReferenceDocument AS xblnr,
-         BusinessPlace                AS bupla
+         AlternativeReferenceDocument AS xblnr
+*         BusinessPlace                AS bupla
     FROM I_JournalEntry
     INTO CORRESPONDING FIELDS OF TABLE @lt_bkpf
     FOR ALL ENTRIES IN @lt_doc_keys
@@ -191,8 +194,8 @@ FORM get_data.
     FROM but020
     INTO CORRESPONDING FIELDS OF TABLE @lt_bp_addr
     FOR ALL ENTRIES IN @lt_kunnr_keys
-    WHERE partner    = @lt_kunnr_keys-kunnr
-      AND flgdefault = 'X'.
+    WHERE partner    = @lt_kunnr_keys-kunnr.
+*      AND flgdefault = 'X'.
 
   DATA lt_adrc TYPE ty_adrc_tab.
   IF lt_bp_addr IS NOT INITIAL.
@@ -202,7 +205,7 @@ FORM get_data.
       INTO CORRESPONDING FIELDS OF TABLE @lt_adrc
       FOR ALL ENTRIES IN @lt_bp_addr
       WHERE addrnumber = @lt_bp_addr-addrnumber
-        AND nation     = space.
+        AND nation     = @space.
   ENDIF.
 
   "--- 11. Sales office ---
@@ -655,7 +658,7 @@ FORM display_flat_alv.
   DATA: lo_alv     TYPE REF TO cl_salv_table,
         lo_cols    TYPE REF TO cl_salv_columns_table,
         lo_events  TYPE REF TO cl_salv_events_table,
-        lo_handler TYPE REF TO lcl_events,
+        lo_handler TYPE REF TO lcl_handle_events,
         lv_title   TYPE string.
 
   CASE gv_mode.
@@ -685,10 +688,12 @@ FORM display_flat_alv.
       DATA lt_budat LIKE s_budat[].
       lt_budat = s_budat[].
       CALL METHOD zcl_s2p_display=>set_top_of_page
-        EXPORTING ip_report_title = lv_title
-                  ip_bukrs        = p_bukrs
-                  it_budat        = lt_budat
-        CHANGING  co_alv          = lo_alv.
+        EXPORTING
+          ip_report_title = lv_title
+          ip_bukrs        = p_bukrs
+          it_budat        = lt_budat
+        CHANGING
+          co_alv          = lo_alv.
 
       gt_creaflow = zcl_s2p_display=>gt_creaflow.
 
@@ -709,46 +714,95 @@ ENDFORM.
 * Binding key  : SEQ_NO (synthetic integer, set in process_data).
 *======================================================================*
 FORM display_hier_alv.
+  DATA:
+    lo_alv     TYPE REF TO cl_salv_table,
+    lo_cols    TYPE REF TO cl_salv_columns_table,
+    lo_events  TYPE REF TO cl_salv_events_table,
+    lo_handler TYPE REF TO lcl_handle_events,
+    lv_title   TYPE string.
 
-  DATA: lo_hierseq  TYPE REF TO cl_salv_hierseq_table,
-        lo_handler  TYPE REF TO lcl_events,
-        lo_bindings TYPE REF TO cl_salv_hierseq_bindings,
-        lo_hdr_cols TYPE REF TO cl_salv_columns,
-        lo_itm_cols TYPE REF TO cl_salv_columns,
-        lo_events   TYPE REF TO cl_salv_events_hierseq.
+  DATA: lo_top_grid TYPE REF TO cl_salv_form_layout_grid,
+        lo_flow     TYPE REF TO cl_salv_form_layout_flow,
+        lo_label    TYPE REF TO cl_salv_form_label,
+        lo_text     TYPE REF TO cl_salv_form_text.
 
+  DATA:
+    lo_salv    TYPE REF TO cl_salv_hierseq_table,
+    lt_binding TYPE salv_t_hierseq_binding,
+    ls_binding TYPE salv_s_hierseq_binding,
+    lx_salv    TYPE REF TO cx_salv_data_error.
+
+  lv_title = TEXT-008.   " 'SALES REPORT - NON-TRADE (SUMMARY LIST)'
+
+  " Define the Parent-Child Relationship (Binding Key)
+  ls_binding-master = 'SEQ_NO'.
+  ls_binding-slave  = 'SEQ_NO'.
+  APPEND ls_binding TO lt_binding.
+
+  " Instantiate the Hierarchical ALV Object
   TRY.
-      cl_salv_hierseq_table=>create(
-        IMPORTING r_hierseq       = lo_hierseq
-        CHANGING  t_outtab_header = gt_output_hdr
-                  t_outtab_item   = gt_output_itm ).
-
-      " Bind header.SEQ_NO → item.SEQ_NO
-      lo_bindings = lo_hierseq->get_bindings( ).
-      lo_bindings->add_binding( master = 'SEQ_NO' slave = 'SEQ_NO' ).
-
-      " Column visibility for header and item levels
-      lo_hdr_cols = lo_hierseq->get_columns_header( ).
-      PERFORM set_hier_hdr_columns USING lo_hdr_cols.
-
-      lo_itm_cols = lo_hierseq->get_columns_item( ).
-      PERFORM set_hier_itm_columns USING lo_itm_cols.
-
-      " Custom PF status and event handler (same ZSTATUS as flat ALV)
-      lo_hierseq->set_screen_status(
-        report        = sy-repid
-        pfstatus      = 'ZSTATUS'
-        set_functions = lo_hierseq->c_functions_all ).
-
-      lo_events = lo_hierseq->get_event( ).
-      CREATE OBJECT lo_handler.
-      SET HANDLER lo_handler->on_added_function_hier FOR lo_events.
-
-      lo_hierseq->display( ).
-
-    CATCH cx_salv_msg INTO DATA(lx).
-      MESSAGE lx->get_text( ) TYPE 'E'.
+      CALL METHOD cl_salv_hierseq_table=>factory
+        EXPORTING
+          t_binding_level1_level2 = lt_binding
+        IMPORTING
+          r_hierseq               = lo_salv
+        CHANGING
+          t_table_level1          = gt_output_hdr
+          t_table_level2          = gt_output_itm.
+    CATCH cx_salv_data_error INTO lx_salv.
+      MESSAGE lx_salv->get_text( ) TYPE 'E'.
   ENDTRY.
+
+  lo_salv->set_screen_status(
+  report        = sy-repid
+  pfstatus      = 'ZSTATUS'
+  set_functions = lo_salv->c_functions_all ).
+
+  "Top of page
+  DATA lt_budat LIKE s_budat[].
+  lt_budat = s_budat[].
+
+  "ALV Top of the page derivation
+  cl_salv_table=>factory(
+        IMPORTING r_salv_table = lo_alv
+        CHANGING  t_table      = gt_output ).
+
+  CALL METHOD zcl_s2p_display=>set_top_of_page
+    EXPORTING
+      ip_report_title = lv_title
+      ip_bukrs        = p_bukrs
+      it_budat        = lt_budat
+    CHANGING
+      co_alv          = lo_alv.
+
+  gt_creaflow = zcl_s2p_display=>gt_creaflow.
+
+  CREATE OBJECT lo_top_grid.
+
+  LOOP AT gt_creaflow INTO DATA(gs_creaflow).
+    IF sy-tabix = 1.
+      lo_text = lo_top_grid->create_text(
+      row     = sy-tabix
+      column  = 1
+      text    = lv_title
+    ).
+    ELSE.
+      DATA(lv_text) = |{ gs_creaflow-label } { gs_creaflow-string }|.
+      lo_text = lo_top_grid->create_text(
+        row     = sy-tabix + 1
+        column  = 1
+        text    = lv_text
+      ).
+    ENDIF.
+  ENDLOOP.
+
+  " Display the ALV Report
+  IF lo_salv IS BOUND.
+    " Attach to the hierarchical ALV
+    lo_salv->set_top_of_list( lo_top_grid ).
+
+    lo_salv->display( ).
+  ENDIF.
 
 ENDFORM.
 
@@ -764,7 +818,7 @@ FORM set_alv_columns USING io_cols TYPE REF TO cl_salv_columns_table.
   LOOP AT lt_all ASSIGNING FIELD-SYMBOL(<ce>).
     TRY.
         io_cols->get_column( <ce>-columnname )->set_visible( abap_false ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -787,7 +841,7 @@ FORM set_alv_columns USING io_cols TYPE REF TO cl_salv_columns_table.
     ( `NOTQ_VAT` ) ( `EXEMPT` ) ( `ZERO_RATED` ) ( `TAXABLE_NET` )
     ( `OUTPUT_VAT` ) ( `TOTAL_SALES` ) ( `GROSS_TAX` ) ).
 
-  DATA lt_visible TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lt_visible TYPE STANDARD TABLE OF lvc_fname WITH EMPTY KEY.
   lt_visible = lt_always.
   CASE gv_mode.
     WHEN gc_sj. APPEND LINES OF lt_sj TO lt_visible.
@@ -797,7 +851,7 @@ FORM set_alv_columns USING io_cols TYPE REF TO cl_salv_columns_table.
   LOOP AT lt_visible INTO DATA(lv_fn).
     TRY.
         io_cols->get_column( lv_fn )->set_visible( abap_true ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -835,7 +889,7 @@ FORM set_alv_columns USING io_cols TYPE REF TO cl_salv_columns_table.
         lo_c->set_long_text(   ls_lbl-coltext_l ).
         lo_c->set_medium_text( ls_lbl-coltext_m ).
         lo_c->set_short_text(  ls_lbl-coltext_s ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -848,20 +902,20 @@ ENDFORM.
 * SEQ_NO is hidden -- it is only a technical binding key.
 *======================================================================*
 FORM set_hier_hdr_columns USING io_cols TYPE REF TO cl_salv_columns.
-
+  DATA lv_fn1 TYPE lvc_fname.
   " Hide all, then reveal the ones needed at header level
   DATA(lt_all) = io_cols->get( ).
   LOOP AT lt_all ASSIGNING FIELD-SYMBOL(<ce>).
     TRY.
         io_cols->get_column( <ce>-columnname )->set_visible( abap_false ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
   DATA lt_vis TYPE STANDARD TABLE OF string WITH EMPTY KEY.
   lt_vis = VALUE #(
     ( `BUDAT` )        ( `INV_DM_DATE` )  ( `BELNR` )
-    ( `DOCUMENT_TYPE` )( `INVOICE_NO` )   ( `DM_NO` )
+    ( `DOCUMENT_TYPE` ) ( `INVOICE_NO` )   ( `DM_NO` )
     ( `BILL_PERIOD` )  ( `BP_CODE` )      ( `TIN` )
     ( `REG_NAME` )     ( `ADDRESS1` )     ( `ADDRESS2` )
     ( `BUKRS` )        ( `BUPLA` )        ( `SALES_OFFICE` )
@@ -873,9 +927,10 @@ FORM set_hier_hdr_columns USING io_cols TYPE REF TO cl_salv_columns.
     ( `TOTAL_SALES` )  ( `GROSS_TAX` ) ).
 
   LOOP AT lt_vis INTO DATA(lv_fn).
+    lv_fn1 = lv_fn.
     TRY.
-        io_cols->get_column( lv_fn )->set_visible( abap_true ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+        io_cols->get_column( lv_fn1 )->set_visible( abap_true ).
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -921,7 +976,7 @@ FORM set_hier_hdr_columns USING io_cols TYPE REF TO cl_salv_columns.
         lo_c->set_long_text(   ls_l-coltext_l ).
         lo_c->set_medium_text( ls_l-coltext_m ).
         lo_c->set_short_text(  ls_l-coltext_s ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -934,13 +989,13 @@ ENDFORM.
 * SEQ_NO is hidden -- it is only a technical binding key.
 *======================================================================*
 FORM set_hier_itm_columns USING io_cols TYPE REF TO cl_salv_columns.
-
+  DATA lv_fn1 TYPE lvc_fname.
   " Hide all
   DATA(lt_all) = io_cols->get( ).
   LOOP AT lt_all ASSIGNING FIELD-SYMBOL(<ce>).
     TRY.
         io_cols->get_column( <ce>-columnname )->set_visible( abap_false ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -952,9 +1007,10 @@ FORM set_hier_itm_columns USING io_cols TYPE REF TO cl_salv_columns.
     ( `GL_CATEGORY` ) ( `LINE_AMOUNT` ) ).
 
   LOOP AT lt_vis INTO DATA(lv_fn).
+    lv_fn1 = lv_fn.
     TRY.
-        io_cols->get_column( lv_fn )->set_visible( abap_true ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+        io_cols->get_column( lv_fn1 )->set_visible( abap_true ).
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -979,7 +1035,7 @@ FORM set_hier_itm_columns USING io_cols TYPE REF TO cl_salv_columns.
         lo_c->set_long_text(   ls_l-coltext_l ).
         lo_c->set_medium_text( ls_l-coltext_m ).
         lo_c->set_short_text(  ls_l-coltext_s ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
@@ -1015,11 +1071,15 @@ FORM get_filedata.
   " Data rows converted to text
   DATA lt_temp TYPE truxs_t_text_data.
   CALL FUNCTION 'SAP_CONVERT_TO_TEX_FORMAT'
-    EXPORTING  i_field_seperator    = cl_abap_char_utilities=>horizontal_tab
-    TABLES     i_tab_sap_data       = gt_output
-    CHANGING   i_tab_converted_data = lt_temp
-    EXCEPTIONS conversion_failed    = 1
-               OTHERS               = 2.
+    EXPORTING
+      i_field_seperator    = cl_abap_char_utilities=>horizontal_tab
+    TABLES
+      i_tab_sap_data       = gt_output
+    CHANGING
+      i_tab_converted_data = lt_temp
+    EXCEPTIONS
+      conversion_failed    = 1
+      OTHERS               = 2.
   IF sy-subrc = 0.
     APPEND LINES OF lt_temp TO gt_out_tab.
   ENDIF.
@@ -1033,28 +1093,28 @@ ENDFORM.
 * Create table ZAB_R2R_SALES_LOG in SE11 using fields from ty_log.
 * Suggested key: MANDT + BUKRS + CPUDT + CPUTM + USNAM.
 *======================================================================*
-FORM write_log USING iv_output_option TYPE char5.
-  DATA ls_log TYPE ty_log.
-  ls_log-mandt         = sy-mandt.
-  ls_log-bukrs         = p_bukrs.
-  ls_log-budat_from    = s_budat-low.
-  ls_log-budat_to      = s_budat-high.
-  ls_log-gjahr         = p_gjahr.
-  ls_log-kunnr         = s_kunnr-low.
-  ls_log-output_option = iv_output_option.
-  ls_log-usnam         = sy-uname.
-  ls_log-cpudt         = sy-datum.
-  ls_log-cputm         = sy-uzeit.
-
-  INSERT zab_r2r_sales_log FROM ls_log.
-  IF sy-subrc <> 0.
-    MESSAGE 'Execution log could not be saved.' TYPE 'W'.
-  ENDIF.
-ENDFORM.
-
-
-*======================================================================*
-* FORM: buildfieldcat -- retained for backward compatibility
-*======================================================================*
-FORM buildfieldcat.
-ENDFORM.
+*FORM write_log USING iv_output_option TYPE char5.
+*  DATA ls_log TYPE ty_log.
+*  ls_log-mandt         = sy-mandt.
+*  ls_log-bukrs         = p_bukrs.
+*  ls_log-budat_from    = s_budat-low.
+*  ls_log-budat_to      = s_budat-high.
+*  ls_log-gjahr         = p_gjahr.
+*  ls_log-kunnr         = s_kunnr-low.
+*  ls_log-output_option = iv_output_option.
+*  ls_log-usnam         = sy-uname.
+*  ls_log-cpudt         = sy-datum.
+*  ls_log-cputm         = sy-uzeit.
+*
+*  INSERT zab_r2r_sales_log FROM ls_log.
+*  IF sy-subrc <> 0.
+*    MESSAGE 'Execution log could not be saved.' TYPE 'W'.
+*  ENDIF.
+*ENDFORM.
+*
+*
+**======================================================================*
+** FORM: buildfieldcat -- retained for backward compatibility
+**======================================================================*
+*FORM buildfieldcat.
+*ENDFORM.

@@ -4,30 +4,13 @@
 
 CLASS lcl_events DEFINITION.
   PUBLIC SECTION.
-    " Handler for flat ALV (SJ / SL mode)
     METHODS on_added_function
       FOR EVENT added_function OF cl_salv_events_table
       IMPORTING e_salv_function.
-    " Handler for hierarchical ALV (DL mode)
-    METHODS on_added_function_hier
-      FOR EVENT added_function OF cl_salv_events_hierseq
-      IMPORTING e_salv_function.
-  PRIVATE SECTION.
-    METHODS handle_function
-      IMPORTING iv_function TYPE salv_de_function.
 ENDCLASS.
 
 CLASS lcl_events IMPLEMENTATION.
-
   METHOD on_added_function.
-    handle_function( iv_function = e_salv_function ).
-  ENDMETHOD.
-
-  METHOD on_added_function_hier.
-    handle_function( iv_function = e_salv_function ).
-  ENDMETHOD.
-
-  METHOD handle_function.
 
     CONSTANTS:
       lc_title  TYPE string VALUE 'Save File',
@@ -42,7 +25,7 @@ CLASS lcl_events IMPLEMENTATION.
       lv_defname   TYPE string,
       lv_separator TYPE c.
 
-    CASE iv_function.
+    CASE e_salv_function.
       WHEN 'EDAT'.
         lv_defname   = 'Sales_NonTrade_Summary.dat'.
         lv_ext       = 'DAT'.
@@ -85,5 +68,4 @@ CLASS lcl_events IMPLEMENTATION.
       EXCEPTIONS OTHERS = 1 ).
 
   ENDMETHOD.
-
 ENDCLASS.

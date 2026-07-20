@@ -99,7 +99,7 @@ TYPES:
     vkbur TYPE vkbur,
   END OF ty_knvv,
 
-  " Master output structure -- covers all 3 report modes
+  " Master output structure -- covers all 3 report modes (used for SJ/SL display + all file downloads)
   BEGIN OF ty_output,
     " Common (all modes)
     budat          TYPE string,
@@ -107,7 +107,7 @@ TYPES:
     reg_name       TYPE string,
     address1       TYPE string,
     address2       TYPE string,
-    " Sales Journal specific (columns C-S)
+    " Sales Journal specific (columns C-S per FS)
     total_amt      TYPE wrbtr,
     non_revenue    TYPE wrbtr,
     revenue        TYPE wrbtr,
@@ -120,7 +120,7 @@ TYPES:
     belnr          TYPE belnr_d,
     invoice_no     TYPE xblnr1,
     dm_no          TYPE string,
-    " Summary List specific (columns T-AA)
+    " Summary List specific (columns T-AA per FS)
     notq_vat       TYPE wrbtr,
     exempt         TYPE wrbtr,
     zero_rated     TYPE wrbtr,
@@ -145,6 +145,59 @@ TYPES:
     cr_gl_no       TYPE saknr,
     cr_gl_name     TYPE string,
   END OF ty_output,
+
+  " Hierarchical ALV: header level -- one row per accounting document (DL mode)
+  BEGIN OF ty_output_hdr,
+    seq_no        TYPE i,           " synthetic key linking header to item rows
+    budat         TYPE string,
+    inv_dm_date   TYPE string,
+    belnr         TYPE belnr_d,
+    document_type TYPE blart,
+    invoice_no    TYPE xblnr1,
+    dm_no         TYPE string,
+    bill_period   TYPE string,
+    bp_code       TYPE kunnr,
+    tin           TYPE string,
+    reg_name      TYPE string,
+    address1      TYPE string,
+    address2      TYPE string,
+    bukrs         TYPE bukrs,
+    bupla         TYPE bupla,
+    sales_office  TYPE vkbur,
+    prctr         TYPE prctr,
+    bktxt         TYPE string,
+    reference     TYPE string,
+    total_amt     TYPE wrbtr,
+    non_revenue   TYPE wrbtr,
+    revenue       TYPE wrbtr,
+    nft           TYPE wrbtr,
+    lft           TYPE wrbtr,
+    vat_amt       TYPE wrbtr,
+    discount      TYPE wrbtr,
+    notq_vat      TYPE wrbtr,
+    exempt        TYPE wrbtr,
+    zero_rated    TYPE wrbtr,
+    taxable_net   TYPE wrbtr,
+    output_vat    TYPE wrbtr,
+    total_sales   TYPE wrbtr,
+    gross_tax     TYPE wrbtr,
+  END OF ty_output_hdr,
+
+  " Hierarchical ALV: item level -- one row per credit GL line (DL mode)
+  BEGIN OF ty_output_itm,
+    seq_no      TYPE i,            " FK → ty_output_hdr-seq_no
+    docln       TYPE char6,
+    posting_key TYPE bschl,
+    vat_code    TYPE mwskz,
+    wht_code    TYPE string,
+    ar_gl_no    TYPE saknr,
+    ar_gl_name  TYPE string,
+    cr_gl_no    TYPE saknr,
+    cr_gl_name  TYPE string,
+    prctr       TYPE prctr,
+    gl_category TYPE char20,       " Revenue/Non-Revenue/NFT/LFT/VAT/Discount/Output VAT
+    line_amount TYPE wrbtr,
+  END OF ty_output_itm,
 
   " Execution log (written to ZAB_R2R_SALES_LOG)
   BEGIN OF ty_log,
@@ -185,15 +238,17 @@ TYPES:
   ty_r_racct TYPE RANGE OF racct,
   ty_r_mwskz TYPE RANGE OF mwskz.
 
-"--- Global variables ---
-DATA:
-  gt_output   TYPE STANDARD TABLE OF ty_output WITH EMPTY KEY,
-  gt_out_tab  TYPE string_table,    " formatted lines for file download
-  gt_creaflow TYPE STANDARD TABLE OF l_s_creaflow WITH EMPTY KEY,
-  gv_mode     TYPE char2.           " gc_sj / gc_sl / gc_dl
-
 TYPES:
   BEGIN OF l_s_creaflow,
     string TYPE string,
     label  TYPE char1,
   END OF l_s_creaflow.
+
+"--- Global variables ---
+DATA:
+  gt_output     TYPE STANDARD TABLE OF ty_output     WITH EMPTY KEY,
+  gt_output_hdr TYPE STANDARD TABLE OF ty_output_hdr WITH EMPTY KEY,
+  gt_output_itm TYPE STANDARD TABLE OF ty_output_itm WITH EMPTY KEY,
+  gt_out_tab    TYPE string_table,    " formatted lines for file download
+  gt_creaflow   TYPE STANDARD TABLE OF l_s_creaflow WITH EMPTY KEY,
+  gv_mode       TYPE char2.           " gc_sj / gc_sl / gc_dl

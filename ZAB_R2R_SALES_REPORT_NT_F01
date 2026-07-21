@@ -470,8 +470,20 @@ FORM process_data
         output_vat    = lv_output_vat
         total_sales   = lv_total_sales
         gross_tax     = lv_gross_tax
-        " ar_gl_no / ar_gl_name / cr_gl_no / cr_gl_name: blank on Header Row
-        " inv_dm_date / bill_period / posting_key / ...: blank on Header Row
+        " ar_gl_no / ar_gl_name: blank at Header Row level (no single credit GL)
+        " cr_gl_no / cr_gl_name: blank at Header Row level
+        " Document-level detail fields -- same value for every Item Row of this document
+        inv_dm_date   = lv_bldat_fmt
+        bill_period   = lv_bill_period
+        posting_key   = lv_bschl
+        document_type = <hdr>-blart
+        vat_code      = lv_mwskz
+        wht_code      = space
+        bp_code       = lv_kunnr
+        bukrs         = <hdr>-bukrs
+        bupla         = <hdr>-bupla
+        sales_office  = lv_vkbur
+        prctr         = lv_prctr
       ) TO gt_output.
 
       " --- Item Rows: one per credit GL line ---

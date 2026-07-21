@@ -4,15 +4,18 @@
 
 *======================================================================*
 * FORM: get_data
-* Reads all data from DB, calls process_data to build gt_output.
-* CDS views: I_JournalEntry, I_JournalEntryItem, I_GLAccount,
-*            I_GLAccountText, I_CustomerSalesArea, I_CompanyCode
-* Direct tables: TVARVC, dfkkbptaxnum (IS-U), but020/adrc, zdt_r2r_fl_gls
+* Reads all data from DB, calls process_data to build output tables.
+* CDS views used: I_JournalEntry, I_JournalEntryItem, I_GLAccount,
+*                 I_GLAccountText, I_CustomerSalesArea, I_CompanyCode
+* Direct tables : TVARVC (no CDS), dfkkbptaxnum (IS-U FI-CA),
+*                 but020/adrc (BP address subfields), zdt_r2r_fl_gls (Z)
 *======================================================================*
 FORM get_data.
 
   "--- 1. Read TVARVC configuration for all ZSALES_* keys (single SELECT) ---
   DATA lt_tvarvc TYPE STANDARD TABLE OF tvarvc WITH EMPTY KEY.
+  DATA ls_rng TYPE rsdsselopt.
+
   SELECT *
     FROM tvarvc
     INTO TABLE @lt_tvarvc
@@ -32,11 +35,12 @@ FORM get_data.
     lr_taxnvat    TYPE ty_r_mwskz.
 
   LOOP AT lt_tvarvc ASSIGNING FIELD-SYMBOL(<tv>).
-    DATA(ls_rng) = VALUE rseloption(
+    ls_rng = VALUE #(
       sign   = <tv>-sign
       option = <tv>-opti
       low    = <tv>-low
       high   = <tv>-high ).
+
     CASE <tv>-name.
       WHEN 'ZSALES_NONTRADEGL'. APPEND ls_rng TO lr_nontradegl.
       WHEN 'ZSALES_NFT'.        APPEND ls_rng TO lr_nft.
@@ -58,7 +62,8 @@ FORM get_data.
     ENDCASE.
   ENDLOOP.
 
-  "--- 2. Identify qualifying documents via Non-Trade AR GL filter ---
+  "--- 2. Identify qualifying documents via Non-Trade AR GL filter (FS logic) ---
+  " Pass BUKRS + BUDAT + RACCT (ZSALES_NONTRADEGL) into ACDOCA-RBUKRS/BUDAT/RACCT
   DATA lt_doc_keys TYPE SORTED TABLE OF ty_acdoca
                    WITH NON-UNIQUE KEY rbukrs belnr gjahr.
 
@@ -69,12 +74,12 @@ FORM get_data.
     FROM I_JournalEntryItem
     INTO CORRESPONDING FIELDS OF TABLE @lt_doc_keys
     WHERE CompanyCode       = @p_bukrs
-      AND FiscalYear        = @p_gjahr
+*      AND FiscalYear        = @p_gjahr
       AND PostingDate       IN @s_budat
       AND GLAccount         IN @lr_nontradegl
       AND Customer          IN @s_kunnr
       AND Ledger            = '0L'
-      AND DebitCreditCode   = 'S'.
+      AND DebitCreditCode   = 'S'.   " AR debit lines only
 
   IF sy-subrc <> 0.
     MESSAGE 'No Non-Trade sales documents found for the selection.' TYPE 'S'
@@ -115,7 +120,7 @@ FORM get_data.
 
   CHECK sy-subrc = 0.
 
-  "--- 4. Fetch document headers (BUPLA and BLDAT are critical) ---
+  "--- 4. Fetch document headers (includes BUPLA and BLDAT) ---
   DATA lt_bkpf TYPE ty_bkpf_tab.
 
   SELECT CompanyCode                  AS bukrs,
@@ -125,8 +130,8 @@ FORM get_data.
          PostingDate                  AS budat,
          DocumentDate                 AS bldat,
          AccountingDocumentHeaderText AS bktxt,
-         AlternativeReferenceDocument AS xblnr,
-         BusinessPlace                AS bupla
+         AlternativeReferenceDocument AS xblnr
+*         BusinessPlace                AS bupla
     FROM I_JournalEntry
     INTO CORRESPONDING FIELDS OF TABLE @lt_bkpf
     FOR ALL ENTRIES IN @lt_doc_keys
@@ -134,14 +139,14 @@ FORM get_data.
       AND AccountingDocument = @lt_doc_keys-belnr
       AND FiscalYear         = @lt_doc_keys-gjahr.
 
-  "--- 5. GL master: P&L vs Balance Sheet ---
+  "--- 5. GL master: P&L vs Balance Sheet (via I_GLAccount + I_CompanyCode) ---
   DATA lv_ktopl TYPE ktopl.
   SELECT SINGLE ChartOfAccounts FROM I_CompanyCode
     INTO @lv_ktopl WHERE CompanyCode = @p_bukrs.
 
   DATA lt_gl_master TYPE ty_gl_mst_tab.
   IF lv_ktopl IS NOT INITIAL.
-    SELECT GLAccount             AS racct,
+    SELECT GLAccount            AS racct,
            IsBalanceSheetAccount AS xbilk
       FROM I_GLAccount
       INTO CORRESPONDING FIELDS OF TABLE @lt_gl_master
@@ -160,7 +165,7 @@ FORM get_data.
     WHERE GLAccount = @lt_acdoca-racct
       AND Language  = @sy-langu.
 
-  "--- 7. GL classification from custom Z-table ---
+  "--- 7. GL classification from custom table (OVT/FCDA/etc.) ---
   DATA lt_gl_class TYPE ty_gl_cls_tab.
   SELECT gl_account, identifier
     FROM zdt_r2r_fl_gls
@@ -168,14 +173,14 @@ FORM get_data.
     FOR ALL ENTRIES IN @lt_acdoca
     WHERE gl_account = @lt_acdoca-racct.
 
-  "--- 8. Unique customers ---
+  "--- 8. Unique customers for reference data lookups ---
   DATA lt_kunnr_keys TYPE SORTED TABLE OF ty_acdoca
                      WITH NON-UNIQUE KEY kunnr.
   lt_kunnr_keys = CORRESPONDING #( lt_acdoca ).
   DELETE lt_kunnr_keys WHERE kunnr IS INITIAL.
   DELETE ADJACENT DUPLICATES FROM lt_kunnr_keys COMPARING kunnr.
 
-  "--- 9. TIN (IS-U dfkkbptaxnum) ---
+  "--- 9. TIN per customer (IS-U dfkkbptaxnum -- no standard CDS equivalent) ---
   DATA lt_tax TYPE ty_tax_tab.
   SELECT partner, taxnum
     FROM dfkkbptaxnum
@@ -183,14 +188,14 @@ FORM get_data.
     FOR ALL ENTRIES IN @lt_kunnr_keys
     WHERE partner = @lt_kunnr_keys-kunnr.
 
-  "--- 10. BP address (but020 + adrc) ---
+  "--- 10. BP address (but020 + adrc -- full subfields not exposed via CDS) ---
   DATA lt_bp_addr TYPE ty_addr_tab.
   SELECT partner, addrnumber
     FROM but020
     INTO CORRESPONDING FIELDS OF TABLE @lt_bp_addr
     FOR ALL ENTRIES IN @lt_kunnr_keys
-    WHERE partner    = @lt_kunnr_keys-kunnr
-      AND flgdefault = 'X'.
+    WHERE partner    = @lt_kunnr_keys-kunnr.
+*      AND flgdefault = 'X'.
 
   DATA lt_adrc TYPE ty_adrc_tab.
   IF lt_bp_addr IS NOT INITIAL.
@@ -200,7 +205,7 @@ FORM get_data.
       INTO CORRESPONDING FIELDS OF TABLE @lt_adrc
       FOR ALL ENTRIES IN @lt_bp_addr
       WHERE addrnumber = @lt_bp_addr-addrnumber
-        AND nation     = space.
+        AND nation     = @space.
   ENDIF.
 
   "--- 11. Sales office ---
@@ -215,7 +220,7 @@ FORM get_data.
     FOR ALL ENTRIES IN @lt_kunnr_keys
     WHERE Customer = @lt_kunnr_keys-kunnr.
 
-  "--- 12. Process into gt_output ---
+  "--- 12. Process into output tables ---
   PERFORM process_data
     USING lt_acdoca lt_bkpf lt_gl_class lt_gl_master lt_gl_text
           lt_tax lt_bp_addr lt_adrc lt_knvv
@@ -227,22 +232,410 @@ ENDFORM.
 
 *======================================================================*
 * FORM: process_data
-* Business logic: categorise amounts per document / line, build gt_output.
-*
-* For SJ / SL : one flat row per document (row_type = blank).
-* For DL      : one 'Header Row' per document (document totals, GL fields
-*               blank) followed by one 'Item Row' per credit GL line.
-*
-* DL SLS allocation rule (matching sample output):
-*   - Revenue / Non-Revenue credit lines receive a proportional share of
-*     the document's debit-side SLS amounts (notq_vat, exempt, etc.).
-*     share = this_line_hsl / (total_revenue_credit + total_non_rev_credit)
-*   - Output VAT (OVT) credit lines: output_vat = line amount; gross_tax = same.
-*   - NFT / LFT / VAT / Discount credit lines: SLS fields blank.
-*
-* Fix vs original: amounts are fully accumulated BEFORE any row is built,
-* eliminating the partial-totals bug present in the old inline DL block.
+* Business logic: categorise amounts per document / line, build output.
+* For SJ/SL: populates gt_output (one row per document).
+* For DL:    populates gt_output_hdr + gt_output_itm (hierarchical ALV)
+*            AND gt_output (flat rows per credit line for file download).
+* Fix vs old code: amounts are fully accumulated BEFORE any row is written,
+* eliminating the partial-totals bug in the former inline DL block.
 *======================================================================*
+*FORM process_data
+*  USING it_acdoca    TYPE ty_acdoca_tab
+*        it_bkpf      TYPE ty_bkpf_tab
+*        it_gl_class  TYPE ty_gl_cls_tab
+*        it_gl_master TYPE ty_gl_mst_tab
+*        it_gl_text   TYPE ty_gl_txt_tab
+*        it_tax       TYPE ty_tax_tab
+*        it_bp_addr   TYPE ty_addr_tab
+*        it_adrc      TYPE ty_adrc_tab
+*        it_knvv      TYPE ty_knvv_tab
+*        ir_nft       TYPE ty_r_racct
+*        ir_lft       TYPE ty_r_racct
+*        ir_vat_gl    TYPE ty_r_racct
+*        ir_discount  TYPE ty_r_racct
+*        ir_nqvat     TYPE ty_r_mwskz
+*        ir_exmpvat   TYPE ty_r_mwskz
+*        ir_zerovat   TYPE ty_r_mwskz
+*        ir_taxnvat   TYPE ty_r_mwskz.
+*
+*  " lv_seq is a monotonic counter linking hdr rows to itm rows; must not be reset per document
+*  DATA lv_seq TYPE i.
+*
+*  " Temp table holds this document's credit lines; filled in inner loop, consumed after it
+*  DATA lt_cr_lines TYPE STANDARD TABLE OF ty_acdoca WITH EMPTY KEY.
+*
+*  SORT it_acdoca BY rbukrs belnr gjahr.
+*
+*  LOOP AT it_acdoca ASSIGNING FIELD-SYMBOL(<item>)
+*    GROUP BY ( rbukrs = <item>-rbukrs
+*               belnr  = <item>-belnr
+*               gjahr  = <item>-gjahr )
+*    ASCENDING
+*    ASSIGNING FIELD-SYMBOL(<grp>).
+*
+*    READ TABLE it_bkpf ASSIGNING FIELD-SYMBOL(<hdr>)
+*      WITH KEY bukrs = <grp>-rbukrs belnr = <grp>-belnr gjahr = <grp>-gjahr
+*      BINARY SEARCH.
+*    CHECK sy-subrc = 0.
+*
+*    " Resolve customer and AR GL from first matching lines in the group
+*    DATA: lv_kunnr    TYPE kunnr,
+*          lv_ar_gl    TYPE racct,
+*          lv_ar_gl_nm TYPE string.
+*
+*    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<ln>).
+*      IF <ln>-kunnr IS NOT INITIAL AND lv_kunnr IS INITIAL.
+*        lv_kunnr = <ln>-kunnr.
+*      ENDIF.
+*      IF <ln>-drcrk = 'S' AND lv_ar_gl IS INITIAL.
+*        lv_ar_gl = <ln>-racct.
+*      ENDIF.
+*    ENDLOOP.
+*
+*    " TIN -- keyed per customer
+*    DATA lv_tin TYPE string.
+*    READ TABLE it_tax ASSIGNING FIELD-SYMBOL(<tax>)
+*      WITH KEY partner = lv_kunnr BINARY SEARCH.
+*    IF sy-subrc = 0 AND <tax>-taxnum IS NOT INITIAL.
+*      lv_tin = |{ <tax>-taxnum+0(3) }-{ <tax>-taxnum+3(3) }-{ <tax>-taxnum+6(3) }-{ <tax>-taxnum+9 }|.
+*    ENDIF.
+*
+*    " Address
+*    DATA: lv_name  TYPE string,
+*          lv_addr1 TYPE string,
+*          lv_addr2 TYPE string.
+*    READ TABLE it_bp_addr ASSIGNING FIELD-SYMBOL(<baddr>)
+*      WITH KEY partner = lv_kunnr BINARY SEARCH.
+*    IF sy-subrc = 0.
+*      READ TABLE it_adrc ASSIGNING FIELD-SYMBOL(<adr>)
+*        WITH KEY addrnumber = <baddr>-addrnumber BINARY SEARCH.
+*      IF sy-subrc = 0.
+*        lv_name  = condense( |{ <adr>-name1 } { <adr>-name2 } { <adr>-name3 } { <adr>-name4 }| ).
+*        lv_addr1 = condense( |{ <adr>-street }, { <adr>-str_suppl1 }, { <adr>-str_suppl2 }| ).
+*        " Assumption C: Address 2 populated when address 1 characters are exceeded
+*        lv_addr2 = condense( |{ <adr>-str_suppl3 } { <adr>-location } { <adr>-city1 }| ).
+*      ENDIF.
+*    ENDIF.
+*
+*    " Sales office
+*    DATA lv_vkbur TYPE vkbur.
+*    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<sl>).
+*      IF <sl>-vkorg IS NOT INITIAL AND lv_vkbur IS INITIAL.
+*        READ TABLE it_knvv ASSIGNING FIELD-SYMBOL(<kv>)
+*          WITH KEY kunnr = lv_kunnr vkorg = <sl>-vkorg
+*                   vtweg = <sl>-vtweg spart = <sl>-spart
+*          BINARY SEARCH.
+*        IF sy-subrc = 0. lv_vkbur = <kv>-vkbur. ENDIF.
+*      ENDIF.
+*    ENDLOOP.
+*
+*    " AR GL text
+*    READ TABLE it_gl_text ASSIGNING FIELD-SYMBOL(<art>)
+*      WITH KEY racct = lv_ar_gl BINARY SEARCH.
+*    IF sy-subrc = 0. lv_ar_gl_nm = <art>-text20. ENDIF.
+*
+*    "==========================================================
+*    " INNER LOOP: accumulate amounts; collect credit lines
+*    "==========================================================
+*    DATA:
+*      lv_total_amt   TYPE wrbtr,
+*      lv_non_rev     TYPE wrbtr,
+*      lv_revenue     TYPE wrbtr,
+*      lv_nft         TYPE wrbtr,
+*      lv_lft         TYPE wrbtr,
+*      lv_vat_amt     TYPE wrbtr,
+*      lv_discount    TYPE wrbtr,
+*      lv_notq_vat    TYPE wrbtr,
+*      lv_exempt      TYPE wrbtr,
+*      lv_zero_rated  TYPE wrbtr,
+*      lv_taxable_net TYPE wrbtr,
+*      lv_output_vat  TYPE wrbtr,
+*      lv_bschl       TYPE bschl,
+*      lv_mwskz       TYPE mwskz,
+*      lv_prctr       TYPE prctr,
+*      lv_sgtxt       TYPE string.
+*
+*    CLEAR lt_cr_lines.
+*
+*    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<li>).
+*
+*      IF <li>-linetype = '02000' AND lv_sgtxt IS INITIAL.
+*        lv_sgtxt = <li>-sgtxt.
+*      ENDIF.
+*      IF <li>-bschl IS NOT INITIAL. lv_bschl = <li>-bschl. ENDIF.
+*      IF <li>-mwskz IS NOT INITIAL. lv_mwskz = <li>-mwskz. ENDIF.
+*      IF <li>-prctr IS NOT INITIAL. lv_prctr = <li>-prctr. ENDIF.
+*
+*      IF <li>-drcrk = 'S'.   "--- DEBIT (AR) side ---
+*        lv_total_amt = lv_total_amt + <li>-hsl.
+*
+*        IF <li>-mwskz IN ir_nqvat.
+*          lv_notq_vat    = lv_notq_vat    + <li>-hsl.
+*        ELSEIF <li>-mwskz IN ir_exmpvat.
+*          lv_exempt      = lv_exempt      + <li>-hsl.
+*        ELSEIF <li>-mwskz IN ir_zerovat.
+*          lv_zero_rated  = lv_zero_rated  + <li>-hsl.
+*        ELSEIF <li>-mwskz IN ir_taxnvat.
+*          lv_taxable_net = lv_taxable_net + <li>-hsl.
+*        ENDIF.
+*
+*      ELSEIF <li>-drcrk = 'H'.   "--- CREDIT side ---
+*        IF <li>-racct IN ir_nft.
+*          lv_nft      = lv_nft      + <li>-hsl.
+*        ELSEIF <li>-racct IN ir_lft.
+*          lv_lft      = lv_lft      + <li>-hsl.
+*        ELSEIF <li>-racct IN ir_vat_gl.
+*          lv_vat_amt  = lv_vat_amt  + <li>-hsl.
+*        ELSEIF <li>-racct IN ir_discount.
+*          lv_discount = lv_discount + <li>-hsl.
+*        ELSE.
+*          READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc>)
+*            WITH KEY gl_account = <li>-racct BINARY SEARCH.
+*          IF sy-subrc = 0 AND <glc>-identifier = 'OVT'.
+*            lv_output_vat = lv_output_vat + <li>-hsl.
+*          ELSE.
+*            READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm>)
+*              WITH KEY racct = <li>-racct BINARY SEARCH.
+*            IF sy-subrc = 0 AND <glm>-xbilk = abap_false.
+*              lv_revenue = lv_revenue + <li>-hsl.
+*            ELSE.
+*              lv_non_rev = lv_non_rev + <li>-hsl.
+*            ENDIF.
+*          ENDIF.
+*        ENDIF.
+*
+*        " Collect credit line for post-loop DL processing
+*        APPEND <li> TO lt_cr_lines.
+*
+*      ENDIF.
+*
+*    ENDLOOP.   " end inner loop (lines within document)
+*
+*    "==========================================================
+*    " POST-LOOP: all amounts are now final. Build output rows.
+*    "==========================================================
+*    ADD 1 TO lv_seq.
+*
+*    DATA lv_total_sales TYPE wrbtr.
+*    DATA lv_gross_tax   TYPE wrbtr.
+*    lv_total_sales = lv_exempt + lv_zero_rated + lv_taxable_net.
+*    lv_gross_tax   = lv_total_sales + lv_output_vat.
+*
+*    DATA lv_inv_no     TYPE xblnr1.
+*    DATA lv_dm_no      TYPE string.
+*    IF <hdr>-blart <> 'DF'.
+*      lv_inv_no = <hdr>-xblnr.
+*    ELSE.
+*      lv_dm_no = <hdr>-xblnr.
+*    ENDIF.
+*
+*    DATA lv_budat_fmt   TYPE string.
+*    DATA lv_bldat_fmt   TYPE string.
+*    DATA lv_bill_period TYPE string.
+*    lv_budat_fmt   = |{ <hdr>-budat+4(2) }/{ <hdr>-budat+6(2) }/{ <hdr>-budat+0(4) }|.
+*    lv_bldat_fmt   = |{ <hdr>-bldat+4(2) }/{ <hdr>-bldat+6(2) }/{ <hdr>-bldat+0(4) }|.
+*    lv_bill_period = <hdr>-budat+4(2).
+*
+*    IF gv_mode = gc_dl.
+*
+*      " --- Hierarchical header row (one per document) ---
+*      DATA ls_hdr TYPE ty_output_hdr.
+*      ls_hdr = VALUE ty_output_hdr(
+*        seq_no        = lv_seq
+*        budat         = lv_budat_fmt
+*        inv_dm_date   = lv_bldat_fmt
+*        belnr         = <hdr>-belnr
+*        document_type = <hdr>-blart
+*        invoice_no    = lv_inv_no
+*        dm_no         = lv_dm_no
+*        bill_period   = lv_bill_period
+*        bp_code       = lv_kunnr
+*        tin           = lv_tin
+*        reg_name      = lv_name
+*        address1      = lv_addr1
+*        address2      = lv_addr2
+*        bukrs         = <hdr>-bukrs
+*        bupla         = <hdr>-bupla
+*        sales_office  = lv_vkbur
+*        prctr         = lv_prctr
+*        bktxt         = <hdr>-bktxt
+*        reference     = lv_sgtxt
+*        total_amt     = lv_total_amt
+*        non_revenue   = lv_non_rev
+*        revenue       = lv_revenue
+*        nft           = lv_nft
+*        lft           = lv_lft
+*        vat_amt       = lv_vat_amt
+*        discount      = lv_discount
+*        notq_vat      = lv_notq_vat
+*        exempt        = lv_exempt
+*        zero_rated    = lv_zero_rated
+*        taxable_net   = lv_taxable_net
+*        output_vat    = lv_output_vat
+*        total_sales   = lv_total_sales
+*        gross_tax     = lv_gross_tax ).
+*      APPEND ls_hdr TO gt_output_hdr.
+*
+*      " --- Per credit line: hierarchical item row + flat row for file download ---
+*      DATA: lv_cr_name TYPE string,
+*            lv_gl_cat  TYPE char20,
+*            ls_itm     TYPE ty_output_itm,
+*            ls_dl      TYPE ty_output.
+*
+*      LOOP AT lt_cr_lines ASSIGNING FIELD-SYMBOL(<cr>).
+*
+*        CLEAR: lv_cr_name, lv_gl_cat.
+*
+*        " GL text for this credit line
+*        READ TABLE it_gl_text ASSIGNING FIELD-SYMBOL(<crt>)
+*          WITH KEY racct = <cr>-racct BINARY SEARCH.
+*        IF sy-subrc = 0. lv_cr_name = <crt>-text20. ENDIF.
+*
+*        " GL category label (same priority as amount categorisation above)
+*        IF <cr>-racct IN ir_nft.
+*          lv_gl_cat = 'NFT'.
+*        ELSEIF <cr>-racct IN ir_lft.
+*          lv_gl_cat = 'LFT'.
+*        ELSEIF <cr>-racct IN ir_vat_gl.
+*          lv_gl_cat = 'VAT'.
+*        ELSEIF <cr>-racct IN ir_discount.
+*          lv_gl_cat = 'Discount'.
+*        ELSE.
+*          READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc2>)
+*            WITH KEY gl_account = <cr>-racct BINARY SEARCH.
+*          IF sy-subrc = 0 AND <glc2>-identifier = 'OVT'.
+*            lv_gl_cat = 'Output VAT'.
+*          ELSE.
+*            READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm2>)
+*              WITH KEY racct = <cr>-racct BINARY SEARCH.
+*            IF sy-subrc = 0 AND <glm2>-xbilk = abap_false.
+*              lv_gl_cat = 'Revenue'.
+*            ELSE.
+*              lv_gl_cat = 'Non-Revenue'.
+*            ENDIF.
+*          ENDIF.
+*        ENDIF.
+*
+*        " Hierarchical item (child of header via seq_no binding)
+*        ls_itm = VALUE ty_output_itm(
+*          seq_no      = lv_seq
+*          docln       = <cr>-docln
+*          posting_key = <cr>-bschl
+*          vat_code    = <cr>-mwskz
+*          wht_code    = space
+*          ar_gl_no    = lv_ar_gl
+*          ar_gl_name  = lv_ar_gl_nm
+*          cr_gl_no    = <cr>-racct
+*          cr_gl_name  = lv_cr_name
+*          prctr       = <cr>-prctr
+*          gl_category = lv_gl_cat
+*          line_amount = <cr>-hsl ).
+*        APPEND ls_itm TO gt_output_itm.
+*
+*        " Flat row -- document totals repeated per credit line (for .dat/.csv/.xls export)
+*        ls_dl = VALUE ty_output(
+*          budat         = lv_budat_fmt
+*          tin           = lv_tin
+*          reg_name      = lv_name
+*          address1      = lv_addr1
+*          address2      = lv_addr2
+*          belnr         = <hdr>-belnr
+*          document_type = <hdr>-blart
+*          bupla         = <hdr>-bupla
+*          prctr         = <cr>-prctr
+*          sales_office  = lv_vkbur
+*          bp_code       = lv_kunnr
+*          bukrs         = <hdr>-bukrs
+*          bktxt         = <hdr>-bktxt
+*          reference     = lv_sgtxt
+*          inv_dm_date   = lv_bldat_fmt
+*          bill_period   = lv_bill_period
+*          posting_key   = <cr>-bschl
+*          vat_code      = <cr>-mwskz
+*          wht_code      = space
+*          ar_gl_no      = lv_ar_gl
+*          ar_gl_name    = lv_ar_gl_nm
+*          cr_gl_no      = <cr>-racct
+*          cr_gl_name    = lv_cr_name
+*          total_amt     = lv_total_amt
+*          non_revenue   = lv_non_rev
+*          revenue       = lv_revenue
+*          nft           = lv_nft
+*          lft           = lv_lft
+*          vat_amt       = lv_vat_amt
+*          discount      = lv_discount
+*          notq_vat      = lv_notq_vat
+*          exempt        = lv_exempt
+*          zero_rated    = lv_zero_rated
+*          taxable_net   = lv_taxable_net
+*          output_vat    = lv_output_vat
+*          total_sales   = lv_total_sales
+*          gross_tax     = lv_gross_tax
+*          invoice_no    = lv_inv_no
+*          dm_no         = lv_dm_no ).
+*        APPEND ls_dl TO gt_output.
+*
+*      ENDLOOP.   " per credit line
+*
+*    ELSEIF gv_mode = gc_sj OR gv_mode = gc_sl.
+*
+*      " One flat row per document for Sales Journal and Summary List
+*      DATA(ls_sum) = VALUE ty_output(
+*        budat         = lv_budat_fmt
+*        tin           = lv_tin
+*        reg_name      = lv_name
+*        address1      = lv_addr1
+*        address2      = lv_addr2
+*        total_amt     = lv_total_amt
+*        non_revenue   = lv_non_rev
+*        revenue       = lv_revenue
+*        nft           = lv_nft
+*        lft           = lv_lft
+*        vat_amt       = lv_vat_amt
+*        discount      = lv_discount
+*        bktxt         = <hdr>-bktxt
+*        reference     = lv_sgtxt
+*        belnr         = <hdr>-belnr
+*        invoice_no    = lv_inv_no
+*        dm_no         = lv_dm_no
+*        notq_vat      = lv_notq_vat
+*        exempt        = lv_exempt
+*        zero_rated    = lv_zero_rated
+*        taxable_net   = lv_taxable_net
+*        output_vat    = lv_output_vat
+*        total_sales   = lv_total_sales
+*        gross_tax     = lv_gross_tax
+*        bupla         = <hdr>-bupla
+*        prctr         = lv_prctr
+*        sales_office  = lv_vkbur
+*        bp_code       = lv_kunnr
+*        bukrs         = <hdr>-bukrs
+*        document_type = <hdr>-blart
+*        inv_dm_date   = lv_bldat_fmt
+*        bill_period   = lv_bill_period
+*        vat_code      = lv_mwskz
+*        wht_code      = space
+*        ar_gl_no      = lv_ar_gl
+*        ar_gl_name    = lv_ar_gl_nm ).
+*      APPEND ls_sum TO gt_output.
+*
+*    ENDIF.
+*
+*    CLEAR: lv_kunnr, lv_ar_gl, lv_ar_gl_nm, lv_tin, lv_name,
+*           lv_addr1, lv_addr2, lv_vkbur, lv_sgtxt, lv_bschl,
+*           lv_mwskz, lv_prctr,
+*           lv_total_amt, lv_non_rev, lv_revenue, lv_nft, lv_lft,
+*           lv_vat_amt, lv_discount, lv_notq_vat, lv_exempt,
+*           lv_zero_rated, lv_taxable_net, lv_output_vat,
+*           lv_inv_no, lv_dm_no, lv_budat_fmt, lv_bldat_fmt,
+*           lv_bill_period, lv_total_sales, lv_gross_tax,
+*           ls_hdr, ls_itm, ls_dl, lt_cr_lines.
+*
+*  ENDLOOP.   " end GROUP BY document
+*
+*ENDFORM.
+
+
 FORM process_data
   USING it_acdoca    TYPE ty_acdoca_tab
         it_bkpf      TYPE ty_bkpf_tab
@@ -444,7 +837,7 @@ FORM process_data
 
       " --- Header Row: document totals; item-specific fields blank ---
       APPEND VALUE ty_output(
-        row_type      = 'Header Row'
+        row_type      = 'H'
         budat         = lv_budat_fmt
         tin           = lv_tin
         reg_name      = lv_name
@@ -472,7 +865,7 @@ FORM process_data
         gross_tax     = lv_gross_tax
         " ar_gl_no / ar_gl_name / cr_gl_no / cr_gl_name: blank on Header Row
         " inv_dm_date / bill_period / posting_key / ...: blank on Header Row
-      ) TO gt_output.
+      ) TO gt_output_hdr.
 
       " --- Item Rows: one per credit GL line ---
       DATA: lv_cr_name     TYPE string,
@@ -563,7 +956,7 @@ FORM process_data
 
         " Append Item Row
         APPEND VALUE ty_output(
-          row_type      = 'Item Row'
+          row_type      = 'I'
           budat         = lv_budat_fmt
           tin           = lv_tin
           reg_name      = lv_name
@@ -604,7 +997,7 @@ FORM process_data
           bupla         = <hdr>-bupla
           sales_office  = lv_vkbur
           prctr         = <cr>-prctr
-        ) TO gt_output.
+        ) TO gt_output_itm.
 
       ENDLOOP.   " per credit line
 
@@ -666,26 +1059,34 @@ FORM process_data
   ENDLOOP.   " end GROUP BY document
 
 ENDFORM.
-
-
 *======================================================================*
 * FORM: display_alv
-* Flat CL_SALV_TABLE for all three modes.
-* DL mode: row_type column ('Header Row'/'Item Row') is visible.
-* SJ/SL mode: row_type column hidden; only mode-specific columns shown.
+* Dispatcher: routes to flat ALV (SJ/SL) or hierarchical ALV (DL).
 *======================================================================*
 FORM display_alv.
+  IF gv_mode = gc_dl.
+    PERFORM display_hier_alv.
+  ELSE.
+    PERFORM display_flat_alv.
+  ENDIF.
+ENDFORM.
+
+
+*======================================================================*
+* FORM: display_flat_alv
+* CL_SALV_TABLE for Sales Journal and Summary List modes.
+*======================================================================*
+FORM display_flat_alv.
 
   DATA: lo_alv     TYPE REF TO cl_salv_table,
         lo_cols    TYPE REF TO cl_salv_columns_table,
         lo_events  TYPE REF TO cl_salv_events_table,
-        lo_handler TYPE REF TO lcl_events,
+        lo_handler TYPE REF TO lcl_handle_events,
         lv_title   TYPE string.
 
   CASE gv_mode.
     WHEN gc_sj. lv_title = TEXT-007.   " 'SALES REPORT - NON-TRADE (SALES JOURNAL)'
     WHEN gc_sl. lv_title = TEXT-008.   " 'SALES REPORT - NON-TRADE (SUMMARY LIST)'
-    WHEN gc_dl. lv_title = TEXT-009.   " 'SALES REPORT - NON-TRADE (DETAILED LIST)'
   ENDCASE.
 
   TRY.
@@ -710,10 +1111,12 @@ FORM display_alv.
       DATA lt_budat LIKE s_budat[].
       lt_budat = s_budat[].
       CALL METHOD zcl_s2p_display=>set_top_of_page
-        EXPORTING ip_report_title = lv_title
-                  ip_bukrs        = p_bukrs
-                  it_budat        = lt_budat
-        CHANGING  co_alv          = lo_alv.
+        EXPORTING
+          ip_report_title = lv_title
+          ip_bukrs        = p_bukrs
+          it_budat        = lt_budat
+        CHANGING
+          co_alv          = lo_alv.
 
       gt_creaflow = zcl_s2p_display=>gt_creaflow.
 
@@ -727,116 +1130,194 @@ ENDFORM.
 
 
 *======================================================================*
+* FORM: display_hier_alv
+* CL_SALV_HIERSEQ_TABLE for Detailed List mode.
+* Header level : one row per accounting document (gt_output_hdr).
+* Item level   : one row per credit GL line     (gt_output_itm).
+* Binding key  : SEQ_NO (synthetic integer, set in process_data).
+*======================================================================*
+FORM display_hier_alv.
+
+  DATA:
+    ls_layout   TYPE slis_layout_alv,
+    ls_keyinfo  TYPE slis_keyinfo_alv,
+    lt_events   TYPE slis_t_event,
+    ls_event    TYPE slis_alv_event,
+    lt_fcat_hdr TYPE slis_t_fieldcat_alv,
+    lt_fcat_itm TYPE slis_t_fieldcat_alv,
+    lv_title    TYPE string.
+
+  lv_title = TEXT-008.
+
+*---------------------------------------------------------------------*
+* Key Information
+*---------------------------------------------------------------------*
+  CLEAR ls_keyinfo.
+
+  ls_keyinfo-header01 = 'BELNR'.
+  ls_keyinfo-item01   = 'BELNR'.
+
+*  ls_layout-colwidth_optimize = abap_true.
+
+**---------------------------------------------------------------------*
+** Build Field Catalogs
+**---------------------------------------------------------------------*
+  " Apply column header texts
+  lt_fcat_hdr = VALUE #(
+    ( fieldname = 'ROW_TYPE'     seltext_l = 'Level'                    seltext_m = 'Level'       seltext_s = 'Level' tabname = 'Head')
+    ( fieldname = 'BUDAT'        seltext_l = 'Posting Date'             seltext_m = 'Post Date'   seltext_s = 'PstDt' tabname = 'Head')
+    ( fieldname = 'TIN'          seltext_l = 'TIN'                      seltext_m = 'TIN'         seltext_s = 'TIN'   tabname = 'Head')
+    ( fieldname = 'REG_NAME'     seltext_l = 'Registered Name'          seltext_m = 'Reg.Name'    seltext_s = 'RegNm' tabname = 'Head')
+    ( fieldname = 'ADDRESS1'     seltext_l = 'Address'                  seltext_m = 'Address'     seltext_s = 'Addr1' tabname = 'Head')
+    ( fieldname = 'ADDRESS2'     seltext_l = 'Address 2'                seltext_m = 'Address 2'   seltext_s = 'Addr2' tabname = 'Head')
+    ( fieldname = 'TOTAL_AMT'    seltext_l = 'Total Amount'             seltext_m = 'Total Amt'   seltext_s = 'TotAm' tabname = 'Head')
+    ( fieldname = 'NON_REVENUE'  seltext_l = 'Non-Revenue'              seltext_m = 'Non-Rev'     seltext_s = 'NRev'  tabname = 'Head')
+    ( fieldname = 'REVENUE'      seltext_l = 'Revenue'                  seltext_m = 'Revenue'     seltext_s = 'Rev'   tabname = 'Head')
+    ( fieldname = 'NFT'          seltext_l = 'NFT'                      seltext_m = 'NFT'         seltext_s = 'NFT'   tabname = 'Head')
+    ( fieldname = 'LFT'          seltext_l = 'LFT'                      seltext_m = 'LFT'         seltext_s = 'LFT'   tabname = 'Head')
+    ( fieldname = 'VAT_AMT'      seltext_l = 'VAT'                      seltext_m = 'VAT'         seltext_s = 'VAT'   tabname = 'Head')
+    ( fieldname = 'DISCOUNT'     seltext_l = 'Discount'                 seltext_m = 'Discount'    seltext_s = 'Disc'  tabname = 'Head')
+    ( fieldname = 'BKTXT'        seltext_l = 'Header Text'              seltext_m = 'Hdr Text'    seltext_s = 'HdrTx' tabname = 'Head')
+    ( fieldname = 'REFERENCE'    seltext_l = 'Reference'                seltext_m = 'Reference'   seltext_s = 'Ref'   tabname = 'Head')
+    ( fieldname = 'BELNR'        seltext_l = 'Document Number'          seltext_m = 'Doc No'      seltext_s = 'DocNo' tabname = 'Head')
+    ( fieldname = 'INVOICE_NO'   seltext_l = 'Invoice Number'           seltext_m = 'Invoice No'  seltext_s = 'InvNo' tabname = 'Head')
+    ( fieldname = 'DM_NO'        seltext_l = 'Debit Memo Number'        seltext_m = 'DM No'       seltext_s = 'DMNo'  tabname = 'Head')
+    ( fieldname = 'NOTQ_VAT'     seltext_l = 'Not Qualified Output VAT' seltext_m = 'NotQual VAT' seltext_s = 'NQVat' tabname = 'Head')
+    ( fieldname = 'EXEMPT'       seltext_l = 'Exempt'                   seltext_m = 'Exempt'      seltext_s = 'Exmpt' tabname = 'Head')
+    ( fieldname = 'ZERO_RATED'   seltext_l = 'Zero-Rated'               seltext_m = 'Zero-Rated'  seltext_s = 'ZroRt' tabname = 'Head')
+    ( fieldname = 'TAXABLE_NET'  seltext_l = 'Taxable Net of VAT'       seltext_m = 'Tax Net VAT' seltext_s = 'TxNet' tabname = 'Head')
+    ( fieldname = 'OUTPUT_VAT'   seltext_l = 'Output VAT'               seltext_m = 'Output VAT'  seltext_s = 'OutVT' tabname = 'Head')
+    ( fieldname = 'TOTAL_SALES'  seltext_l = 'Total Sales'              seltext_m = 'Total Sales' seltext_s = 'TotSl' tabname = 'Head')
+    ( fieldname = 'GROSS_TAX'    seltext_l = 'Gross Taxable'            seltext_m = 'Gross Tax'   seltext_s = 'GrsTx' tabname = 'Head') ).
+
+  "Create item field catalog from header
+  lt_fcat_itm = CORRESPONDING #( lt_fcat_hdr ).
+
+  LOOP AT lt_fcat_itm ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+    <fs_fcat>-tabname = 'Item'.
+  ENDLOOP.
+
+  "Combined field catalog if required
+  APPEND LINES OF lt_fcat_itm TO lt_fcat_hdr.
+**---------------------------------------------------------------------*
+** Register TOP_OF_PAGE Event
+**---------------------------------------------------------------------*
+  CALL FUNCTION 'REUSE_ALV_EVENTS_GET'
+    EXPORTING
+      i_list_type = 0
+    IMPORTING
+      et_events   = lt_events.
+
+  READ TABLE lt_events INTO ls_event
+       WITH KEY name = slis_ev_top_of_page.
+  IF sy-subrc = 0.
+    ls_event-form = 'TOP_OF_PAGE'.
+    MODIFY lt_events FROM ls_event TRANSPORTING form WHERE name = 'TOP_OF_PAGE'.
+  ENDIF.
+
+*---------------------------------------------------------------------*
+* Display Hierarchical ALV
+*---------------------------------------------------------------------*
+  CALL FUNCTION 'REUSE_ALV_HIERSEQ_LIST_DISPLAY'
+    EXPORTING
+      i_callback_program = sy-repid
+      i_tabname_header   = 'Head'
+      i_tabname_item     = 'Item'
+      is_keyinfo         = ls_keyinfo
+      it_events          = lt_events
+*     is_layout          = ls_layout
+      it_fieldcat        = lt_fcat_hdr
+    TABLES
+      t_outtab_header    = gt_output_hdr
+      t_outtab_item      = gt_output_itm
+    EXCEPTIONS
+      program_error      = 1
+      OTHERS             = 2.
+
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid
+            TYPE sy-msgty
+            NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+ENDFORM.
+
+
+*======================================================================*
 * FORM: set_alv_columns
-* Controls column visibility and labels per mode.
-* Column order follows ty_output field order which matches the sample layout.
+* Controls column labels and visibility for flat ALV (SJ / SL modes).
 *======================================================================*
 FORM set_alv_columns USING io_cols TYPE REF TO cl_salv_columns_table.
 
-  " Hide all columns first
+  " First hide all columns
   DATA(lt_all) = io_cols->get( ).
   LOOP AT lt_all ASSIGNING FIELD-SYMBOL(<ce>).
     TRY.
         io_cols->get_column( <ce>-columnname )->set_visible( abap_false ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
-  " --- Build visible column list per mode ---
-  DATA lt_visible TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  " Columns always shown regardless of mode
+  DATA lt_always TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  lt_always = VALUE #( ( `BUDAT` ) ( `TIN` ) ( `REG_NAME` )
+                       ( `ADDRESS1` ) ( `ADDRESS2` ) ).
 
+  " Sales Journal columns (columns C-S per FS)
+  DATA lt_sj TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  lt_sj = VALUE #(
+    ( `TOTAL_AMT` ) ( `NON_REVENUE` ) ( `REVENUE` )
+    ( `NFT` ) ( `LFT` ) ( `VAT_AMT` ) ( `DISCOUNT` )
+    ( `BKTXT` ) ( `REFERENCE` ) ( `BELNR` )
+    ( `INVOICE_NO` ) ( `DM_NO` ) ).
+
+  " Summary List columns (columns T-AA per FS)
+  DATA lt_sl TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  lt_sl = VALUE #(
+    ( `NOTQ_VAT` ) ( `EXEMPT` ) ( `ZERO_RATED` ) ( `TAXABLE_NET` )
+    ( `OUTPUT_VAT` ) ( `TOTAL_SALES` ) ( `GROSS_TAX` ) ).
+
+  DATA lt_visible TYPE STANDARD TABLE OF lvc_fname WITH EMPTY KEY.
+  lt_visible = lt_always.
   CASE gv_mode.
-
-    WHEN gc_sj.   " Sales Journal: common + SJ amount section
-      lt_visible = VALUE #(
-        ( `BUDAT` )       ( `TIN` )        ( `REG_NAME` )
-        ( `ADDRESS1` )    ( `ADDRESS2` )
-        ( `TOTAL_AMT` )   ( `NON_REVENUE` ) ( `REVENUE` )
-        ( `NFT` )         ( `LFT` )         ( `VAT_AMT` )
-        ( `DISCOUNT` )    ( `BKTXT` )       ( `REFERENCE` )
-        ( `BELNR` )       ( `INVOICE_NO` )  ( `DM_NO` ) ).
-
-    WHEN gc_sl.   " Summary List: common + SLS section
-      lt_visible = VALUE #(
-        ( `BUDAT` )       ( `TIN` )         ( `REG_NAME` )
-        ( `ADDRESS1` )    ( `ADDRESS2` )
-        ( `NOTQ_VAT` )    ( `EXEMPT` )      ( `ZERO_RATED` )
-        ( `TAXABLE_NET` ) ( `SL_VAT` )      ( `OUTPUT_VAT` )
-        ( `TOTAL_SALES` ) ( `GROSS_TAX` ) ).
-
-    WHEN gc_dl.   " Detailed List: row_type + all columns (matches sample C2-C42)
-      lt_visible = VALUE #(
-        ( `ROW_TYPE` )
-        ( `BUDAT` )       ( `TIN` )         ( `REG_NAME` )
-        ( `ADDRESS1` )    ( `ADDRESS2` )
-        ( `TOTAL_AMT` )   ( `NON_REVENUE` ) ( `REVENUE` )
-        ( `NFT` )         ( `LFT` )         ( `VAT_AMT` )
-        ( `DISCOUNT` )    ( `BKTXT` )       ( `REFERENCE` )
-        ( `BELNR` )       ( `INVOICE_NO` )  ( `DM_NO` )
-        ( `NOTQ_VAT` )    ( `EXEMPT` )      ( `ZERO_RATED` )
-        ( `TAXABLE_NET` ) ( `SL_VAT` )      ( `OUTPUT_VAT` )
-        ( `TOTAL_SALES` ) ( `GROSS_TAX` )
-        ( `AR_GL_NO` )    ( `AR_GL_NAME` )
-        ( `CR_GL_NO` )    ( `CR_GL_NAME` )
-        ( `INV_DM_DATE` ) ( `BILL_PERIOD` )
-        ( `POSTING_KEY` ) ( `DOCUMENT_TYPE` )
-        ( `VAT_CODE` )    ( `WHT_CODE` )
-        ( `BP_CODE` )     ( `BUKRS` )       ( `BUPLA` )
-        ( `SALES_OFFICE` )( `PRCTR` ) ).
-
+    WHEN gc_sj. APPEND LINES OF lt_sj TO lt_visible.
+    WHEN gc_sl. APPEND LINES OF lt_sl TO lt_visible.
   ENDCASE.
 
   LOOP AT lt_visible INTO DATA(lv_fn).
     TRY.
         io_cols->get_column( lv_fn )->set_visible( abap_true ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
-  " --- Column header texts ---
+  " Apply column header texts
   DATA lt_labels TYPE STANDARD TABLE OF ty_fieldcat WITH EMPTY KEY.
   lt_labels = VALUE #(
-    ( fieldname = 'ROW_TYPE'      coltext_l = 'Row Type'                  coltext_m = 'Row Type'    coltext_s = 'RowTyp' )
-    ( fieldname = 'BUDAT'         coltext_l = 'Posting Date'              coltext_m = 'Post Date'   coltext_s = 'PstDt'  )
-    ( fieldname = 'TIN'           coltext_l = 'TIN'                       coltext_m = 'TIN'         coltext_s = 'TIN'    )
-    ( fieldname = 'REG_NAME'      coltext_l = 'Registered Name'           coltext_m = 'Reg. Name'   coltext_s = 'RegNm'  )
-    ( fieldname = 'ADDRESS1'      coltext_l = 'Address'                   coltext_m = 'Address'     coltext_s = 'Addr1'  )
-    ( fieldname = 'ADDRESS2'      coltext_l = 'Address 2'                 coltext_m = 'Address 2'   coltext_s = 'Addr2'  )
-    ( fieldname = 'TOTAL_AMT'     coltext_l = 'Total Amount'              coltext_m = 'Total Amt'   coltext_s = 'TotAm'  )
-    ( fieldname = 'NON_REVENUE'   coltext_l = 'Non-Revenue'               coltext_m = 'Non-Rev'     coltext_s = 'NRev'   )
-    ( fieldname = 'REVENUE'       coltext_l = 'Revenue'                   coltext_m = 'Revenue'     coltext_s = 'Rev'    )
-    ( fieldname = 'NFT'           coltext_l = 'NFT'                       coltext_m = 'NFT'         coltext_s = 'NFT'    )
-    ( fieldname = 'LFT'           coltext_l = 'LFT'                       coltext_m = 'LFT'         coltext_s = 'LFT'    )
-    ( fieldname = 'VAT_AMT'       coltext_l = 'VAT'                       coltext_m = 'VAT'         coltext_s = 'VAT'    )
-    ( fieldname = 'DISCOUNT'      coltext_l = 'Discount'                  coltext_m = 'Discount'    coltext_s = 'Disc'   )
-    ( fieldname = 'BKTXT'         coltext_l = 'Header Text'               coltext_m = 'Hdr Text'    coltext_s = 'HdrTx'  )
-    ( fieldname = 'REFERENCE'     coltext_l = 'Reference'                 coltext_m = 'Reference'   coltext_s = 'Ref'    )
-    ( fieldname = 'BELNR'         coltext_l = 'Document Number'           coltext_m = 'Doc No'      coltext_s = 'DocNo'  )
-    ( fieldname = 'INVOICE_NO'    coltext_l = 'Invoice Number'            coltext_m = 'Invoice No'  coltext_s = 'InvNo'  )
-    ( fieldname = 'DM_NO'         coltext_l = 'Debit Memo Number'         coltext_m = 'DM No'       coltext_s = 'DMNo'   )
-    ( fieldname = 'NOTQ_VAT'      coltext_l = 'Not Qualified Output VAT'  coltext_m = 'NotQual VAT' coltext_s = 'NQVat'  )
-    ( fieldname = 'EXEMPT'        coltext_l = 'Exempt'                    coltext_m = 'Exempt'      coltext_s = 'Exmpt'  )
-    ( fieldname = 'ZERO_RATED'    coltext_l = 'Zero-Rated'                coltext_m = 'Zero-Rated'  coltext_s = 'ZroRt'  )
-    ( fieldname = 'TAXABLE_NET'   coltext_l = 'Taxable Net of VAT'        coltext_m = 'Tax Net VAT' coltext_s = 'TxNet'  )
-    ( fieldname = 'SL_VAT'        coltext_l = 'VAT'                       coltext_m = 'VAT'         coltext_s = 'SLVAT'  )
-    ( fieldname = 'OUTPUT_VAT'    coltext_l = 'Output VAT'                coltext_m = 'Output VAT'  coltext_s = 'OutVT'  )
-    ( fieldname = 'TOTAL_SALES'   coltext_l = 'Total Sales'               coltext_m = 'Total Sales' coltext_s = 'TotSl'  )
-    ( fieldname = 'GROSS_TAX'     coltext_l = 'Gross Taxable'             coltext_m = 'Gross Tax'   coltext_s = 'GrsTx'  )
-    ( fieldname = 'AR_GL_NO'      coltext_l = 'AR GL Account Number'      coltext_m = 'AR GL No'    coltext_s = 'ARGLn'  )
-    ( fieldname = 'AR_GL_NAME'    coltext_l = 'AR GL Account Name'        coltext_m = 'AR GL Name'  coltext_s = 'ARGLt'  )
-    ( fieldname = 'CR_GL_NO'      coltext_l = 'Credit GL Account Number'  coltext_m = 'CR GL No'    coltext_s = 'CRGLn'  )
-    ( fieldname = 'CR_GL_NAME'    coltext_l = 'Credit GL Account Name'    coltext_m = 'CR GL Name'  coltext_s = 'CRGLt'  )
-    ( fieldname = 'INV_DM_DATE'   coltext_l = 'Invoice / Debit Memo Date' coltext_m = 'Inv/DM Date' coltext_s = 'InvDt'  )
-    ( fieldname = 'BILL_PERIOD'   coltext_l = 'Bill Period'               coltext_m = 'Bill Period' coltext_s = 'BllPd'  )
-    ( fieldname = 'POSTING_KEY'   coltext_l = 'Posting Key'               coltext_m = 'Post Key'    coltext_s = 'PstKy'  )
-    ( fieldname = 'DOCUMENT_TYPE' coltext_l = 'Document Type'             coltext_m = 'Doc Type'    coltext_s = 'DcTyp'  )
-    ( fieldname = 'VAT_CODE'      coltext_l = 'VAT Code'                  coltext_m = 'VAT Code'    coltext_s = 'VATCd'  )
-    ( fieldname = 'WHT_CODE'      coltext_l = 'WHT Code'                  coltext_m = 'WHT Code'    coltext_s = 'WHTCd'  )
-    ( fieldname = 'BP_CODE'       coltext_l = 'Business Partner Code'     coltext_m = 'BP Code'     coltext_s = 'BPCd'   )
-    ( fieldname = 'BUKRS'         coltext_l = 'Company Code'              coltext_m = 'Comp Code'   coltext_s = 'CoCd'   )
-    ( fieldname = 'BUPLA'         coltext_l = 'Business Place'            coltext_m = 'Bus Place'   coltext_s = 'BusPl'  )
-    ( fieldname = 'SALES_OFFICE'  coltext_l = 'Sales Office'              coltext_m = 'Sales Off'   coltext_s = 'SlsOf'  )
-    ( fieldname = 'PRCTR'         coltext_l = 'Profit Center'             coltext_m = 'Prof Center' coltext_s = 'PrCtr'  ) ).
+    ( fieldname = 'BUDAT'        coltext_l = 'Posting Date'             coltext_m = 'Post Date'   coltext_s = 'PstDt' )
+    ( fieldname = 'TIN'          coltext_l = 'TIN'                      coltext_m = 'TIN'         coltext_s = 'TIN'   )
+    ( fieldname = 'REG_NAME'     coltext_l = 'Registered Name'          coltext_m = 'Reg.Name'    coltext_s = 'RegNm' )
+    ( fieldname = 'ADDRESS1'     coltext_l = 'Address'                  coltext_m = 'Address'     coltext_s = 'Addr1' )
+    ( fieldname = 'ADDRESS2'     coltext_l = 'Address 2'                coltext_m = 'Address 2'   coltext_s = 'Addr2' )
+    ( fieldname = 'TOTAL_AMT'    coltext_l = 'Total Amount'             coltext_m = 'Total Amt'   coltext_s = 'TotAm' )
+    ( fieldname = 'NON_REVENUE'  coltext_l = 'Non-Revenue'              coltext_m = 'Non-Rev'     coltext_s = 'NRev'  )
+    ( fieldname = 'REVENUE'      coltext_l = 'Revenue'                  coltext_m = 'Revenue'     coltext_s = 'Rev'   )
+    ( fieldname = 'NFT'          coltext_l = 'NFT'                      coltext_m = 'NFT'         coltext_s = 'NFT'   )
+    ( fieldname = 'LFT'          coltext_l = 'LFT'                      coltext_m = 'LFT'         coltext_s = 'LFT'   )
+    ( fieldname = 'VAT_AMT'      coltext_l = 'VAT'                      coltext_m = 'VAT'         coltext_s = 'VAT'   )
+    ( fieldname = 'DISCOUNT'     coltext_l = 'Discount'                 coltext_m = 'Discount'    coltext_s = 'Disc'  )
+    ( fieldname = 'BKTXT'        coltext_l = 'Header Text'              coltext_m = 'Hdr Text'    coltext_s = 'HdrTx' )
+    ( fieldname = 'REFERENCE'    coltext_l = 'Reference'                coltext_m = 'Reference'   coltext_s = 'Ref'   )
+    ( fieldname = 'BELNR'        coltext_l = 'Document Number'          coltext_m = 'Doc No'      coltext_s = 'DocNo' )
+    ( fieldname = 'INVOICE_NO'   coltext_l = 'Invoice Number'           coltext_m = 'Invoice No'  coltext_s = 'InvNo' )
+    ( fieldname = 'DM_NO'        coltext_l = 'Debit Memo Number'        coltext_m = 'DM No'       coltext_s = 'DMNo'  )
+    ( fieldname = 'NOTQ_VAT'     coltext_l = 'Not Qualified Output VAT' coltext_m = 'NotQual VAT' coltext_s = 'NQVat' )
+    ( fieldname = 'EXEMPT'       coltext_l = 'Exempt'                   coltext_m = 'Exempt'      coltext_s = 'Exmpt' )
+    ( fieldname = 'ZERO_RATED'   coltext_l = 'Zero-Rated'               coltext_m = 'Zero-Rated'  coltext_s = 'ZroRt' )
+    ( fieldname = 'TAXABLE_NET'  coltext_l = 'Taxable Net of VAT'       coltext_m = 'Tax Net VAT' coltext_s = 'TxNet' )
+    ( fieldname = 'OUTPUT_VAT'   coltext_l = 'Output VAT'               coltext_m = 'Output VAT'  coltext_s = 'OutVT' )
+    ( fieldname = 'TOTAL_SALES'  coltext_l = 'Total Sales'              coltext_m = 'Total Sales' coltext_s = 'TotSl' )
+    ( fieldname = 'GROSS_TAX'    coltext_l = 'Gross Taxable'            coltext_m = 'Gross Tax'   coltext_s = 'GrsTx' ) ).
 
   LOOP AT lt_labels INTO DATA(ls_lbl).
     TRY.
@@ -844,21 +1325,21 @@ FORM set_alv_columns USING io_cols TYPE REF TO cl_salv_columns_table.
         lo_c->set_long_text(   ls_lbl-coltext_l ).
         lo_c->set_medium_text( ls_lbl-coltext_m ).
         lo_c->set_short_text(  ls_lbl-coltext_s ).
-      CATCH cx_salv_not_found. "#EC NEEDED
+      CATCH cx_salv_not_found.                              "#EC NEEDED
     ENDTRY.
   ENDLOOP.
 
 ENDFORM.
-
-
 *======================================================================*
 * FORM: get_filedata
 * Builds gt_out_tab (string table) for file download.
-* gt_output flat table used for all modes.
+* Always uses gt_output (flat table) regardless of mode.
+* For DL mode gt_output contains one row per credit GL line.
 *======================================================================*
 FORM get_filedata.
   CLEAR gt_out_tab.
 
+  " Report title
   DATA lv_title TYPE string.
   CASE gv_mode.
     WHEN gc_sj. lv_title = TEXT-007.
@@ -867,19 +1348,26 @@ FORM get_filedata.
   ENDCASE.
   APPEND lv_title TO gt_out_tab.
 
+  " Header block from shared display class (populated for SJ/SL; may be empty for DL)
   LOOP AT gt_creaflow INTO DATA(ls_cf).
     APPEND ls_cf-string TO gt_out_tab.
   ENDLOOP.
 
+  " Blank separator line
   APPEND space TO gt_out_tab.
 
+  " Data rows converted to text
   DATA lt_temp TYPE truxs_t_text_data.
   CALL FUNCTION 'SAP_CONVERT_TO_TEX_FORMAT'
-    EXPORTING  i_field_seperator    = cl_abap_char_utilities=>horizontal_tab
-    TABLES     i_tab_sap_data       = gt_output
-    CHANGING   i_tab_converted_data = lt_temp
-    EXCEPTIONS conversion_failed    = 1
-               OTHERS               = 2.
+    EXPORTING
+      i_field_seperator    = cl_abap_char_utilities=>horizontal_tab
+    TABLES
+      i_tab_sap_data       = gt_output
+    CHANGING
+      i_tab_converted_data = lt_temp
+    EXCEPTIONS
+      conversion_failed    = 1
+      OTHERS               = 2.
   IF sy-subrc = 0.
     APPEND LINES OF lt_temp TO gt_out_tab.
   ENDIF.
@@ -890,31 +1378,86 @@ ENDFORM.
 *======================================================================*
 * FORM: write_log
 * Inserts one execution record into ZAB_R2R_SALES_LOG.
-* Create ZAB_R2R_SALES_LOG in SE11 using ty_log fields.
-* Key: MANDT + BUKRS + CPUDT + CPUTM + USNAM.
+* Create table ZAB_R2R_SALES_LOG in SE11 using fields from ty_log.
+* Suggested key: MANDT + BUKRS + CPUDT + CPUTM + USNAM.
 *======================================================================*
-FORM write_log USING iv_output_option TYPE char5.
-  DATA ls_log TYPE ty_log.
-  ls_log-mandt         = sy-mandt.
-  ls_log-bukrs         = p_bukrs.
-  ls_log-budat_from    = s_budat-low.
-  ls_log-budat_to      = s_budat-high.
-  ls_log-gjahr         = p_gjahr.
-  ls_log-kunnr         = s_kunnr-low.
-  ls_log-output_option = iv_output_option.
-  ls_log-usnam         = sy-uname.
-  ls_log-cpudt         = sy-datum.
-  ls_log-cputm         = sy-uzeit.
+*FORM write_log USING iv_output_option TYPE char5.
+*  DATA ls_log TYPE ty_log.
+*  ls_log-mandt         = sy-mandt.
+*  ls_log-bukrs         = p_bukrs.
+*  ls_log-budat_from    = s_budat-low.
+*  ls_log-budat_to      = s_budat-high.
+*  ls_log-gjahr         = p_gjahr.
+*  ls_log-kunnr         = s_kunnr-low.
+*  ls_log-output_option = iv_output_option.
+*  ls_log-usnam         = sy-uname.
+*  ls_log-cpudt         = sy-datum.
+*  ls_log-cputm         = sy-uzeit.
+*
+*  INSERT zab_r2r_sales_log FROM ls_log.
+*  IF sy-subrc <> 0.
+*    MESSAGE 'Execution log could not be saved.' TYPE 'W'.
+*  ENDIF.
+*ENDFORM.
+*
+*
+**======================================================================*
+** FORM: buildfieldcat -- retained for backward compatibility
+**======================================================================*
+*FORM buildfieldcat.
+*ENDFORM.
 
-  INSERT zab_r2r_sales_log FROM ls_log.
-  IF sy-subrc <> 0.
-    MESSAGE 'Execution log could not be saved.' TYPE 'W'.
-  ENDIF.
+FORM top_of_page.
+  DATA:
+    lo_alv    TYPE REF TO cl_salv_table,
+    lv_title  TYPE string,
+    lt_header TYPE slis_t_listheader,
+    ls_header TYPE slis_listheader.
+
+  DATA lt_budat LIKE s_budat[].
+  lt_budat = s_budat[].
+
+  lv_title = TEXT-008.
+
+  "ALV Top of the page derivation
+  cl_salv_table=>factory(
+        IMPORTING r_salv_table = lo_alv
+        CHANGING  t_table      = gt_output ).
+
+  CALL METHOD zcl_s2p_display=>set_top_of_page
+    EXPORTING
+      ip_report_title = lv_title
+      ip_bukrs        = p_bukrs
+      it_budat        = lt_budat
+    CHANGING
+      co_alv          = lo_alv.
+
+  gt_creaflow = zcl_s2p_display=>gt_creaflow.
+
+  LOOP AT gt_creaflow INTO DATA(gs_creaflow).
+    IF sy-tabix = 1.
+      " Header type 'H' (Header)
+      ls_header-typ  = 'H'.
+      ls_header-info = lv_title.
+      APPEND ls_header TO lt_header.
+    ELSEIF sy-tabix = 2.
+      ls_header-typ  = 'H'.
+      ls_header-info = ''.
+      APPEND ls_header TO lt_header.
+    ELSE.
+      " Header type 'S' (Selection / Key-Value)
+      SPLIT gs_creaflow-string AT ':' INTO DATA(ls_val) DATA(ls_val1).
+      ls_header-typ  = 'H'.
+      ls_header-info = |{ ls_val }: { ls_val1 }|.
+      APPEND ls_header TO lt_header.
+    ENDIF.
+  ENDLOOP.
+
+  CALL FUNCTION 'REUSE_ALV_COMMENTARY_WRITE'
+    EXPORTING
+      it_list_commentary = lt_header.
 ENDFORM.
 
-
-*======================================================================*
-* FORM: buildfieldcat -- retained for backward compatibility
-*======================================================================*
-FORM buildfieldcat.
+FORM set_pf_status USING rt_extab TYPE slis_t_extab.
+  SET PF-STATUS 'ZSTATUS' EXCLUDING rt_extab.
 ENDFORM.

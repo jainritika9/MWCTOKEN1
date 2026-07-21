@@ -503,11 +503,16 @@ FORM process_data
             lv_itm_taxnet  TYPE wrbtr,
             lv_itm_slvat   TYPE wrbtr,
             lv_itm_totsls  TYPE wrbtr,
-            lv_itm_grxtax  TYPE wrbtr.
+            lv_itm_grxtax  TYPE wrbtr,
+            " Sign factor: ACDOCA may store credit HSL as positive absolute value.
+            " lv_cr_sign = -1 when hsl > 0 (stored positive) so credits display negative.
+            " lv_cr_sign =  1 when hsl < 0 (already negative in ACDOCA) -- no change.
+            " Applied only to Books-of-Accounts fields; SLS amounts stay positive.
+            lv_cr_sign     TYPE p DECIMALS 0.
 
       LOOP AT lt_cr_lines ASSIGNING FIELD-SYMBOL(<cr>).
 
-        CLEAR: lv_cr_name, lv_gl_cat, lv_share,
+        CLEAR: lv_cr_name, lv_gl_cat, lv_share, lv_cr_sign,
                lv_itm_nonrev, lv_itm_rev, lv_itm_nft, lv_itm_lft,
                lv_itm_vat, lv_itm_disc, lv_itm_outvat,
                lv_itm_notqvat, lv_itm_exempt, lv_itm_zerort, lv_itm_taxnet,
@@ -517,6 +522,12 @@ FORM process_data
         READ TABLE it_gl_text ASSIGNING FIELD-SYMBOL(<crt>)
           WITH KEY racct = <cr>-racct BINARY SEARCH.
         IF sy-subrc = 0. lv_cr_name = <crt>-text20. ENDIF.
+
+        " Sign: ACDOCA DRCRK='H' credit amounts may be stored as positive absolute values.
+        " Force negative sign for display so credits are clearly distinct from the
+        " Header Row debit total (which is always positive).
+        " If ACDOCA already stores them negative (hsl < 0), the factor is 1 (no change).
+        lv_cr_sign = COND #( WHEN <cr>-hsl > 0 THEN -1 ELSE 1 ).
 
         " Classify this credit GL line and set the matching SJ amount field
         IF <cr>-racct IN ir_nft.
@@ -574,6 +585,10 @@ FORM process_data
         ENDIF.
 
         " Append Item Row
+        " Books-of-Accounts amounts (credit side) are negated via lv_cr_sign so that
+        " credits display as negative vs the positive debit total on the Header Row.
+        " SLS proportional amounts (notq_vat, exempt, etc.) come from the debit side
+        " tax accumulation and remain positive.
         APPEND VALUE ty_output(
           row_type      = 'Item Row'
           budat         = lv_budat_fmt
@@ -581,35 +596,35 @@ FORM process_data
           reg_name      = lv_name
           address1      = lv_addr1
           address2      = lv_addr2
-          total_amt     = <cr>-hsl          " this credit line's amount only
-          non_revenue   = lv_itm_nonrev
-          revenue       = lv_itm_rev
-          nft           = lv_itm_nft
-          lft           = lv_itm_lft
-          vat_amt       = lv_itm_vat
-          discount      = lv_itm_disc
+          total_amt     = <cr>-hsl      * lv_cr_sign   " credit = negative
+          non_revenue   = lv_itm_nonrev * lv_cr_sign
+          revenue       = lv_itm_rev    * lv_cr_sign
+          nft           = lv_itm_nft    * lv_cr_sign
+          lft           = lv_itm_lft    * lv_cr_sign
+          vat_amt       = lv_itm_vat    * lv_cr_sign
+          discount      = lv_itm_disc   * lv_cr_sign
           bktxt         = <hdr>-bktxt
           reference     = lv_sgtxt
           belnr         = <hdr>-belnr
           invoice_no    = lv_inv_no
           dm_no         = lv_dm_no
-          notq_vat      = lv_itm_notqvat
+          notq_vat      = lv_itm_notqvat               " positive (from debit tax codes)
           exempt        = lv_itm_exempt
           zero_rated    = lv_itm_zerort
           taxable_net   = lv_itm_taxnet
           sl_vat        = lv_itm_slvat
-          output_vat    = lv_itm_outvat
+          output_vat    = lv_itm_outvat * lv_cr_sign   " credit = negative
           total_sales   = lv_itm_totsls
           gross_tax     = lv_itm_grxtax
-          ar_gl_no      = lv_ar_gl           " debit (AR) GL -- same for all items
+          ar_gl_no      = lv_ar_gl
           ar_gl_name    = lv_ar_gl_nm
-          cr_gl_no      = <cr>-racct          " credit GL -- specific to this line
+          cr_gl_no      = <cr>-racct
           cr_gl_name    = lv_cr_name
           inv_dm_date   = lv_bldat_fmt
           bill_period   = lv_bill_period
           posting_key   = <cr>-bschl
           document_type = <hdr>-blart
-          vat_code      = lv_mwskz            " document-level tax code (from AR line)
+          vat_code      = lv_mwskz
           wht_code      = space
           bp_code       = lv_kunnr
           bukrs         = <hdr>-bukrs

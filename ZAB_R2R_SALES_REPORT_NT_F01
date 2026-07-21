@@ -381,26 +381,28 @@ FORM process_data
         ENDIF.
 
       ELSEIF <li>-drcrk = 'H'.   "--- CREDIT side ---
+        " ABS(): ACDOCA stores credit HSL as negative; use absolute value so all
+        " output amounts carry the same positive sign as the debit total_amt.
         IF <li>-racct IN ir_nft.
-          lv_nft      = lv_nft      + <li>-hsl.
+          lv_nft      = lv_nft      + ABS( <li>-hsl ).
         ELSEIF <li>-racct IN ir_lft.
-          lv_lft      = lv_lft      + <li>-hsl.
+          lv_lft      = lv_lft      + ABS( <li>-hsl ).
         ELSEIF <li>-racct IN ir_vat_gl.
-          lv_vat_amt  = lv_vat_amt  + <li>-hsl.
+          lv_vat_amt  = lv_vat_amt  + ABS( <li>-hsl ).
         ELSEIF <li>-racct IN ir_discount.
-          lv_discount = lv_discount + <li>-hsl.
+          lv_discount = lv_discount + ABS( <li>-hsl ).
         ELSE.
           READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc>)
             WITH KEY gl_account = <li>-racct BINARY SEARCH.
           IF sy-subrc = 0 AND <glc>-identifier = 'OVT'.
-            lv_output_vat = lv_output_vat + <li>-hsl.
+            lv_output_vat = lv_output_vat + ABS( <li>-hsl ).
           ELSE.
             READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm>)
               WITH KEY racct = <li>-racct BINARY SEARCH.
             IF sy-subrc = 0 AND <glm>-xbilk = abap_false.
-              lv_revenue = lv_revenue + <li>-hsl.
+              lv_revenue = lv_revenue + ABS( <li>-hsl ).
             ELSE.
-              lv_non_rev = lv_non_rev + <li>-hsl.
+              lv_non_rev = lv_non_rev + ABS( <li>-hsl ).
             ENDIF.
           ENDIF.
         ENDIF.
@@ -518,57 +520,55 @@ FORM process_data
           WITH KEY racct = <cr>-racct BINARY SEARCH.
         IF sy-subrc = 0. lv_cr_name = <crt>-text20. ENDIF.
 
-        " Classify this credit GL line and set the matching SJ amount field
+        " Classify this credit GL line and set the matching SJ amount field.
+        " ABS() applied to match the positive sign of total_amt (debit side).
         IF <cr>-racct IN ir_nft.
           lv_gl_cat   = 'NFT'.
-          lv_itm_nft  = <cr>-hsl.
+          lv_itm_nft  = ABS( <cr>-hsl ).
 
         ELSEIF <cr>-racct IN ir_lft.
           lv_gl_cat   = 'LFT'.
-          lv_itm_lft  = <cr>-hsl.
+          lv_itm_lft  = ABS( <cr>-hsl ).
 
         ELSEIF <cr>-racct IN ir_vat_gl.
           lv_gl_cat     = 'VAT'.
-          lv_itm_vat    = <cr>-hsl.
-          lv_itm_slvat  = <cr>-hsl.   " also appears in SLS VAT column
+          lv_itm_vat    = ABS( <cr>-hsl ).
+          lv_itm_slvat  = ABS( <cr>-hsl ).
 
         ELSEIF <cr>-racct IN ir_discount.
           lv_gl_cat   = 'Discount'.
-          lv_itm_disc = <cr>-hsl.
+          lv_itm_disc = ABS( <cr>-hsl ).
 
         ELSE.
           READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc2>)
             WITH KEY gl_account = <cr>-racct BINARY SEARCH.
 
           IF sy-subrc = 0 AND <glc2>-identifier = 'OVT'.
-            " Output VAT GL: contributes only to output_vat and gross_tax in SLS
             lv_gl_cat      = 'Output VAT'.
-            lv_itm_outvat  = <cr>-hsl.
-            lv_itm_grxtax  = <cr>-hsl.
+            lv_itm_outvat  = ABS( <cr>-hsl ).
+            lv_itm_grxtax  = ABS( <cr>-hsl ).
 
           ELSE.
-            " Revenue (P&L) or Non-Revenue (BS) GL:
-            " receives proportional share of document SLS amounts from debit side
             READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm2>)
               WITH KEY racct = <cr>-racct BINARY SEARCH.
             IF sy-subrc = 0 AND <glm2>-xbilk = abap_false.
               lv_gl_cat   = 'Revenue'.
-              lv_itm_rev  = <cr>-hsl.
+              lv_itm_rev  = ABS( <cr>-hsl ).
             ELSE.
               lv_gl_cat      = 'Non-Revenue'.
-              lv_itm_nonrev  = <cr>-hsl.
+              lv_itm_nonrev  = ABS( <cr>-hsl ).
             ENDIF.
 
-            " Proportional SLS allocation
+            " Proportional SLS allocation: use ABS for share so ratio is always positive
             IF lv_rev_nonrev_total <> 0.
-              lv_share          = <cr>-hsl / lv_rev_nonrev_total.
-              lv_itm_notqvat    = lv_notq_vat    * lv_share.
-              lv_itm_exempt     = lv_exempt       * lv_share.
-              lv_itm_zerort     = lv_zero_rated   * lv_share.
-              lv_itm_taxnet     = lv_taxable_net  * lv_share.
-              lv_itm_slvat      = lv_vat_amt      * lv_share.
-              lv_itm_totsls     = lv_itm_exempt + lv_itm_zerort + lv_itm_taxnet.
-              lv_itm_grxtax     = lv_itm_totsls.  " output VAT handled by OVT lines
+              lv_share       = ABS( <cr>-hsl ) / lv_rev_nonrev_total.
+              lv_itm_notqvat = lv_notq_vat   * lv_share.
+              lv_itm_exempt  = lv_exempt      * lv_share.
+              lv_itm_zerort  = lv_zero_rated  * lv_share.
+              lv_itm_taxnet  = lv_taxable_net * lv_share.
+              lv_itm_slvat   = lv_vat_amt     * lv_share.
+              lv_itm_totsls  = lv_itm_exempt + lv_itm_zerort + lv_itm_taxnet.
+              lv_itm_grxtax  = lv_itm_totsls.
             ENDIF.
           ENDIF.
         ENDIF.
@@ -581,7 +581,7 @@ FORM process_data
           reg_name      = lv_name
           address1      = lv_addr1
           address2      = lv_addr2
-          total_amt     = <cr>-hsl
+          total_amt     = ABS( <cr>-hsl )
           non_revenue   = lv_itm_nonrev
           revenue       = lv_itm_rev
           nft           = lv_itm_nft

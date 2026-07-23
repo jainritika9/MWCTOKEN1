@@ -253,65 +253,10 @@ FORM process_data
         ir_zerovat   TYPE ty_r_mwskz
         ir_taxnvat   TYPE ty_r_mwskz.
 
-  " Credit lines collected per document (DL mode only)
+  " Temp table holds credit lines for each document; collected in inner loop
   DATA lt_cr_lines TYPE STANDARD TABLE OF ty_acdoca WITH EMPTY KEY.
 
-  " All per-document working fields declared once -- reset at each iteration
-  DATA: lv_kunnr        TYPE kunnr,
-        lv_ar_gl        TYPE racct,
-        lv_ar_gl_nm     TYPE string,
-        lv_vkbur        TYPE vkbur,
-        lv_vkorg        TYPE vkorg,
-        lv_vtweg        TYPE vtweg,
-        lv_spart        TYPE spart,
-        lv_tin          TYPE string,
-        lv_name         TYPE string,
-        lv_addr1        TYPE string,
-        lv_addr2        TYPE string,
-        lv_sgtxt        TYPE string,
-        lv_bschl        TYPE bschl,
-        lv_mwskz        TYPE mwskz,
-        lv_prctr        TYPE prctr,
-        lv_total_amt    TYPE wrbtr,
-        lv_non_rev      TYPE wrbtr,
-        lv_revenue      TYPE wrbtr,
-        lv_nft          TYPE wrbtr,
-        lv_lft          TYPE wrbtr,
-        lv_vat_amt      TYPE wrbtr,
-        lv_discount     TYPE wrbtr,
-        lv_notq_vat     TYPE wrbtr,
-        lv_exempt       TYPE wrbtr,
-        lv_zero_rated   TYPE wrbtr,
-        lv_taxable_net  TYPE wrbtr,
-        lv_output_vat   TYPE wrbtr,
-        lv_total_sales  TYPE wrbtr,
-        lv_gross_tax    TYPE wrbtr,
-        lv_budat_fmt    TYPE string,
-        lv_bldat_fmt    TYPE string,
-        lv_bill_period  TYPE string,
-        lv_inv_no       TYPE xblnr1,
-        lv_dm_no        TYPE string,
-        lv_rev_nonrev_total TYPE wrbtr.
-
-  " Per-item fields for DL mode
-  DATA: lv_cr_name     TYPE string,
-        lv_share       TYPE p DECIMALS 6,
-        lv_itm_nonrev  TYPE wrbtr,
-        lv_itm_rev     TYPE wrbtr,
-        lv_itm_nft     TYPE wrbtr,
-        lv_itm_lft     TYPE wrbtr,
-        lv_itm_vat     TYPE wrbtr,
-        lv_itm_disc    TYPE wrbtr,
-        lv_itm_outvat  TYPE wrbtr,
-        lv_itm_notqvat TYPE wrbtr,
-        lv_itm_exempt  TYPE wrbtr,
-        lv_itm_zerort  TYPE wrbtr,
-        lv_itm_taxnet  TYPE wrbtr,
-        lv_itm_slvat   TYPE wrbtr,
-        lv_itm_totsls  TYPE wrbtr,
-        lv_itm_grxtax  TYPE wrbtr.
-
-  SORT it_acdoca BY rbukrs belnr gjahr.
+  SORT it_acdoca BY rbukrs belnr gjahr docln.
 
   LOOP AT it_acdoca ASSIGNING FIELD-SYMBOL(<item>)
     GROUP BY ( rbukrs = <item>-rbukrs
@@ -325,92 +270,32 @@ FORM process_data
       BINARY SEARCH.
     CHECK sy-subrc = 0.
 
-    " Reset all per-document fields at the start of each iteration
-    CLEAR: lv_kunnr, lv_ar_gl, lv_ar_gl_nm, lv_vkbur,
-           lv_vkorg, lv_vtweg, lv_spart,
-           lv_tin, lv_name, lv_addr1, lv_addr2,
-           lv_sgtxt, lv_bschl, lv_mwskz, lv_prctr,
-           lv_total_amt, lv_non_rev, lv_revenue, lv_nft, lv_lft,
-           lv_vat_amt, lv_discount, lv_notq_vat, lv_exempt,
-           lv_zero_rated, lv_taxable_net, lv_output_vat,
-           lv_total_sales, lv_gross_tax,
-           lv_budat_fmt, lv_bldat_fmt, lv_bill_period,
-           lv_inv_no, lv_dm_no, lv_rev_nonrev_total.
-    CLEAR lt_cr_lines.
+    " Resolve customer and AR GL from first matching lines in the group
+    DATA: lv_kunnr    TYPE kunnr,
+          lv_ar_gl    TYPE racct,
+          lv_ar_gl_nm TYPE string.
 
-    "--- Single pass: capture context fields + accumulate amounts ---
-    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<li>).
-
-      " First debit (AR) line: capture GL, customer, posting key, tax code
-      IF <li>-drcrk = 'S'.
-        IF lv_ar_gl IS INITIAL.
-          lv_ar_gl = <li>-racct.
-          lv_bschl = <li>-bschl.
-        ENDIF.
-        IF lv_kunnr IS INITIAL AND <li>-kunnr IS NOT INITIAL.
-          lv_kunnr = <li>-kunnr.
-        ENDIF.
-        IF lv_mwskz IS INITIAL AND <li>-mwskz IS NOT INITIAL.
-          lv_mwskz = <li>-mwskz.
-        ENDIF.
-
-        " Debit amount and SLS categorisation by tax code
-        lv_total_amt += <li>-hsl.
-        IF    <li>-mwskz IN ir_nqvat.   lv_notq_vat    += <li>-hsl.
-        ELSEIF <li>-mwskz IN ir_exmpvat. lv_exempt      += <li>-hsl.
-        ELSEIF <li>-mwskz IN ir_zerovat. lv_zero_rated  += <li>-hsl.
-        ELSEIF <li>-mwskz IN ir_taxnvat. lv_taxable_net += <li>-hsl.
-        ENDIF.
-
-      ELSEIF <li>-drcrk = 'H'.
-        " Credit side: categorise by GL account
-        IF    <li>-racct IN ir_nft.      lv_nft      += <li>-hsl.
-        ELSEIF <li>-racct IN ir_lft.     lv_lft      += <li>-hsl.
-        ELSEIF <li>-racct IN ir_vat_gl.  lv_vat_amt  += <li>-hsl.
-        ELSEIF <li>-racct IN ir_discount. lv_discount += <li>-hsl.
-        ELSE.
-          READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc>)
-            WITH KEY gl_account = <li>-racct BINARY SEARCH.
-          IF sy-subrc = 0 AND <glc>-identifier = 'OVT'.
-            lv_output_vat += <li>-hsl.
-          ELSE.
-            READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm>)
-              WITH KEY racct = <li>-racct BINARY SEARCH.
-            IF sy-subrc = 0 AND <glm>-xbilk = abap_false.
-              lv_revenue += <li>-hsl.
-            ELSE.
-              lv_non_rev += <li>-hsl.
-            ENDIF.
-          ENDIF.
-        ENDIF.
-        " Collect credit lines for DL Item Row building (DL mode only)
-        IF gv_mode = gc_dl. APPEND <li> TO lt_cr_lines. ENDIF.
+    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<ln>).
+      IF <ln>-kunnr IS NOT INITIAL AND lv_kunnr IS INITIAL.
+        lv_kunnr = <ln>-kunnr.
       ENDIF.
-
-      " Reference text: first line with linetype 02000
-      IF lv_sgtxt IS INITIAL AND <li>-linetype = '02000'.
-        lv_sgtxt = <li>-sgtxt.
+      IF <ln>-drcrk = 'S' AND lv_ar_gl IS INITIAL.
+        lv_ar_gl = <ln>-racct.
       ENDIF.
-      " Profit center: last non-initial value wins
-      IF <li>-prctr IS NOT INITIAL. lv_prctr = <li>-prctr. ENDIF.
-      " Sales org: first occurrence (for sales office lookup after loop)
-      IF lv_vkorg IS INITIAL AND <li>-vkorg IS NOT INITIAL.
-        lv_vkorg = <li>-vkorg.
-        lv_vtweg = <li>-vtweg.
-        lv_spart = <li>-spart.
-      ENDIF.
+    ENDLOOP.
 
-    ENDLOOP.   " single pass over document group
-
-    "--- Post-loop: context lookups (lv_kunnr now guaranteed) ---
-    " TIN
+    " TIN -- keyed per customer
+    DATA lv_tin TYPE string.
     READ TABLE it_tax ASSIGNING FIELD-SYMBOL(<tax>)
       WITH KEY partner = lv_kunnr BINARY SEARCH.
     IF sy-subrc = 0 AND <tax>-taxnum IS NOT INITIAL.
       lv_tin = |{ <tax>-taxnum+0(3) }-{ <tax>-taxnum+3(3) }-{ <tax>-taxnum+6(3) }-{ <tax>-taxnum+9 }|.
     ENDIF.
 
-    " Address (two-step: but020 -> adrc)
+    " Address
+    DATA: lv_name  TYPE string,
+          lv_addr1 TYPE string,
+          lv_addr2 TYPE string.
     READ TABLE it_bp_addr ASSIGNING FIELD-SYMBOL(<baddr>)
       WITH KEY partner = lv_kunnr BINARY SEARCH.
     IF sy-subrc = 0.
@@ -424,38 +309,131 @@ FORM process_data
     ENDIF.
 
     " Sales office
-    IF lv_kunnr IS NOT INITIAL AND lv_vkorg IS NOT INITIAL.
-      READ TABLE it_knvv ASSIGNING FIELD-SYMBOL(<kv>)
-        WITH KEY kunnr = lv_kunnr vkorg = lv_vkorg vtweg = lv_vtweg spart = lv_spart
-        BINARY SEARCH.
-      IF sy-subrc = 0. lv_vkbur = <kv>-vkbur. ENDIF.
-    ENDIF.
+    DATA lv_vkbur TYPE vkbur.
+    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<sl>).
+      IF <sl>-vkorg IS NOT INITIAL AND lv_vkbur IS INITIAL.
+        READ TABLE it_knvv ASSIGNING FIELD-SYMBOL(<kv>)
+          WITH KEY kunnr = lv_kunnr vkorg = <sl>-vkorg
+                   vtweg = <sl>-vtweg spart = <sl>-spart
+          BINARY SEARCH.
+        IF sy-subrc = 0. lv_vkbur = <kv>-vkbur. ENDIF.
+      ENDIF.
+    ENDLOOP.
 
-    " AR GL description
+    " AR GL text
     READ TABLE it_gl_text ASSIGNING FIELD-SYMBOL(<art>)
       WITH KEY racct = lv_ar_gl BINARY SEARCH.
     IF sy-subrc = 0. lv_ar_gl_nm = <art>-text20. ENDIF.
 
-    "--- Derived totals and formatted dates ---
+    "==========================================================
+    " INNER LOOP: accumulate amounts; collect credit lines
+    "==========================================================
+    DATA:
+      lv_total_amt   TYPE wrbtr,
+      lv_non_rev     TYPE wrbtr,
+      lv_revenue     TYPE wrbtr,
+      lv_nft         TYPE wrbtr,
+      lv_lft         TYPE wrbtr,
+      lv_vat_amt     TYPE wrbtr,
+      lv_discount    TYPE wrbtr,
+      lv_notq_vat    TYPE wrbtr,
+      lv_exempt      TYPE wrbtr,
+      lv_zero_rated  TYPE wrbtr,
+      lv_taxable_net TYPE wrbtr,
+      lv_output_vat  TYPE wrbtr,
+      lv_bschl       TYPE bschl,
+      lv_mwskz       TYPE mwskz,
+      lv_prctr       TYPE prctr,
+      lv_sgtxt       TYPE string.
+
+    CLEAR lt_cr_lines.
+
+    LOOP AT GROUP <grp> ASSIGNING FIELD-SYMBOL(<li>).
+
+      IF <li>-linetype = '02000' AND lv_sgtxt IS INITIAL.
+        lv_sgtxt = <li>-sgtxt.
+      ENDIF.
+      IF <li>-bschl IS NOT INITIAL. lv_bschl = <li>-bschl. ENDIF.
+      IF <li>-mwskz IS NOT INITIAL. lv_mwskz = <li>-mwskz. ENDIF.
+      IF <li>-prctr IS NOT INITIAL. lv_prctr = <li>-prctr. ENDIF.
+
+      IF <li>-drcrk = 'S'.   "--- DEBIT (AR) side ---
+        lv_total_amt = lv_total_amt + <li>-hsl.
+
+        " SLS categorisation driven by AR line tax code
+        IF <li>-mwskz IN ir_nqvat.
+          lv_notq_vat    = lv_notq_vat    + <li>-hsl.
+        ELSEIF <li>-mwskz IN ir_exmpvat.
+          lv_exempt      = lv_exempt      + <li>-hsl.
+        ELSEIF <li>-mwskz IN ir_zerovat.
+          lv_zero_rated  = lv_zero_rated  + <li>-hsl.
+        ELSEIF <li>-mwskz IN ir_taxnvat.
+          lv_taxable_net = lv_taxable_net + <li>-hsl.
+        ENDIF.
+
+      ELSEIF <li>-drcrk = 'H'.   "--- CREDIT side ---
+        IF <li>-racct IN ir_nft.
+          lv_nft      = lv_nft      + <li>-hsl.
+        ELSEIF <li>-racct IN ir_lft.
+          lv_lft      = lv_lft      + <li>-hsl.
+        ELSEIF <li>-racct IN ir_vat_gl.
+          lv_vat_amt  = lv_vat_amt  + <li>-hsl.
+        ELSEIF <li>-racct IN ir_discount.
+          lv_discount = lv_discount + <li>-hsl.
+        ELSE.
+          READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc>)
+            WITH KEY gl_account = <li>-racct BINARY SEARCH.
+          IF sy-subrc = 0 AND <glc>-identifier = 'OVT'.
+            lv_output_vat = lv_output_vat + <li>-hsl.
+          ELSE.
+            READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm>)
+              WITH KEY racct = <li>-racct BINARY SEARCH.
+            IF sy-subrc = 0 AND <glm>-xbilk = abap_false.
+              lv_revenue = lv_revenue + <li>-hsl.
+            ELSE.
+              lv_non_rev = lv_non_rev + <li>-hsl.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+
+        " Collect all credit lines for DL row building after this loop
+        APPEND <li> TO lt_cr_lines.
+      ENDIF.
+
+    ENDLOOP.   " end inner loop
+
+    "==========================================================
+    " POST-LOOP: all amounts are final. Build output rows.
+    "==========================================================
+    DATA lv_total_sales  TYPE wrbtr.
+    DATA lv_gross_tax    TYPE wrbtr.
     lv_total_sales = lv_exempt + lv_zero_rated + lv_taxable_net.
     lv_gross_tax   = lv_total_sales + lv_output_vat.
 
+    DATA lv_inv_no     TYPE xblnr1.
+    DATA lv_dm_no      TYPE string.
     IF <hdr>-blart <> 'DF'.
       lv_inv_no = <hdr>-xblnr.
     ELSE.
-      lv_dm_no  = <hdr>-xblnr.
+      lv_dm_no = <hdr>-xblnr.
     ENDIF.
 
+    DATA lv_budat_fmt   TYPE string.
+    DATA lv_bldat_fmt   TYPE string.
+    DATA lv_bill_period TYPE string.
     lv_budat_fmt   = |{ <hdr>-budat+4(2) }/{ <hdr>-budat+6(2) }/{ <hdr>-budat+0(4) }|.
     lv_bldat_fmt   = |{ <hdr>-bldat+4(2) }/{ <hdr>-bldat+6(2) }/{ <hdr>-bldat+0(4) }|.
     lv_bill_period = <hdr>-budat+4(2).
 
-    "--- Build output rows ---
     IF gv_mode = gc_dl.
 
+      "=== DETAILED LIST: Header Row + Item Rows (flat ALV with row_type) ===
+
+      " Denominator for proportional SLS allocation to Revenue/Non-Rev lines
+      DATA lv_rev_nonrev_total TYPE wrbtr.
       lv_rev_nonrev_total = lv_revenue + lv_non_rev.
 
-      " Header Row: document-level totals (ar_gl/cr_gl blank -- no single credit GL)
+      " --- Header Row: document totals; item-specific fields blank ---
       APPEND VALUE ty_output(
         row_type      = 'Header Row'
         budat         = lv_budat_fmt
@@ -463,7 +441,7 @@ FORM process_data
         reg_name      = lv_name
         address1      = lv_addr1
         address2      = lv_addr2
-        total_amt     = lv_total_amt
+        total_amt     = lv_total_amt    " total AR debit amount
         non_revenue   = lv_non_rev
         revenue       = lv_revenue
         nft           = lv_nft
@@ -479,7 +457,7 @@ FORM process_data
         exempt        = lv_exempt
         zero_rated    = lv_zero_rated
         taxable_net   = lv_taxable_net
-        sl_vat        = lv_vat_amt
+        sl_vat        = lv_vat_amt      " VAT GL amount repeated in SLS section
         output_vat    = lv_output_vat
         total_sales   = lv_total_sales
         gross_tax     = lv_gross_tax
@@ -494,59 +472,111 @@ FORM process_data
         bupla         = <hdr>-bupla
         sales_office  = lv_vkbur
         prctr         = lv_prctr
-      ) TO gt_output.
+      ) TO gt_output_hdr.
 
-      " Item Rows: one per credit GL line
+      " --- Item Rows: one per credit GL line ---
+      DATA: lv_cr_name     TYPE string,
+            lv_gl_cat      TYPE char20,
+            lv_share       TYPE p DECIMALS 6,
+            lv_itm_nonrev  TYPE wrbtr,
+            lv_itm_rev     TYPE wrbtr,
+            lv_itm_nft     TYPE wrbtr,
+            lv_itm_lft     TYPE wrbtr,
+            lv_itm_vat     TYPE wrbtr,
+            lv_itm_disc    TYPE wrbtr,
+            lv_itm_outvat  TYPE wrbtr,
+            lv_itm_notqvat TYPE wrbtr,
+            lv_itm_exempt  TYPE wrbtr,
+            lv_itm_zerort  TYPE wrbtr,
+            lv_itm_taxnet  TYPE wrbtr,
+            lv_itm_slvat   TYPE wrbtr,
+            lv_itm_totsls  TYPE wrbtr,
+            lv_itm_grxtax  TYPE wrbtr,
+            " Sign factor: ACDOCA may store credit HSL as positive absolute value.
+            " lv_cr_sign = -1 when hsl > 0 (stored positive) so credits display negative.
+            " lv_cr_sign =  1 when hsl < 0 (already negative in ACDOCA) -- no change.
+            " Applied only to Books-of-Accounts fields; SLS amounts stay positive.
+            lv_cr_sign     TYPE p DECIMALS 0.
+
       LOOP AT lt_cr_lines ASSIGNING FIELD-SYMBOL(<cr>).
 
-        CLEAR: lv_cr_name, lv_share,
+        CLEAR: lv_cr_name, lv_gl_cat, lv_share, lv_cr_sign,
                lv_itm_nonrev, lv_itm_rev, lv_itm_nft, lv_itm_lft,
                lv_itm_vat, lv_itm_disc, lv_itm_outvat,
                lv_itm_notqvat, lv_itm_exempt, lv_itm_zerort, lv_itm_taxnet,
                lv_itm_slvat, lv_itm_totsls, lv_itm_grxtax.
 
+        " GL text for this credit line
         READ TABLE it_gl_text ASSIGNING FIELD-SYMBOL(<crt>)
           WITH KEY racct = <cr>-racct BINARY SEARCH.
         IF sy-subrc = 0. lv_cr_name = <crt>-text20. ENDIF.
 
-        " Classify credit GL line; set the matching Books-of-Accounts amount
-        IF    <cr>-racct IN ir_nft.
-          lv_itm_nft   = <cr>-hsl.
+        " Sign: ACDOCA DRCRK='H' credit amounts may be stored as positive absolute values.
+        " Force negative sign for display so credits are clearly distinct from the
+        " Header Row debit total (which is always positive).
+        " If ACDOCA already stores them negative (hsl < 0), the factor is 1 (no change).
+        lv_cr_sign = COND #( WHEN <cr>-hsl > 0 THEN -1 ELSE 1 ).
+
+        " Classify this credit GL line and set the matching SJ amount field
+        IF <cr>-racct IN ir_nft.
+          lv_gl_cat   = 'NFT'.
+          lv_itm_nft  = <cr>-hsl.
+
         ELSEIF <cr>-racct IN ir_lft.
-          lv_itm_lft   = <cr>-hsl.
+          lv_gl_cat   = 'LFT'.
+          lv_itm_lft  = <cr>-hsl.
+
         ELSEIF <cr>-racct IN ir_vat_gl.
-          lv_itm_vat   = <cr>-hsl.
-          lv_itm_slvat = <cr>-hsl.
+          lv_gl_cat     = 'VAT'.
+          lv_itm_vat    = <cr>-hsl.
+          lv_itm_slvat  = <cr>-hsl.   " also appears in SLS VAT column
+
         ELSEIF <cr>-racct IN ir_discount.
-          lv_itm_disc  = <cr>-hsl.
+          lv_gl_cat   = 'Discount'.
+          lv_itm_disc = <cr>-hsl.
+
         ELSE.
           READ TABLE it_gl_class ASSIGNING FIELD-SYMBOL(<glc2>)
             WITH KEY gl_account = <cr>-racct BINARY SEARCH.
+
           IF sy-subrc = 0 AND <glc2>-identifier = 'OVT'.
-            lv_itm_outvat = <cr>-hsl.
-            lv_itm_grxtax = <cr>-hsl.
+            " Output VAT GL: contributes only to output_vat and gross_tax in SLS
+            lv_gl_cat      = 'Output VAT'.
+            lv_itm_outvat  = <cr>-hsl.
+            lv_itm_grxtax  = <cr>-hsl.
+
           ELSE.
+            " Revenue (P&L) or Non-Revenue (BS) GL:
+            " receives proportional share of document SLS amounts from debit side
             READ TABLE it_gl_master ASSIGNING FIELD-SYMBOL(<glm2>)
               WITH KEY racct = <cr>-racct BINARY SEARCH.
             IF sy-subrc = 0 AND <glm2>-xbilk = abap_false.
-              lv_itm_rev    = <cr>-hsl.
+              lv_gl_cat   = 'Revenue'.
+              lv_itm_rev  = <cr>-hsl.
             ELSE.
-              lv_itm_nonrev = <cr>-hsl.
+              lv_gl_cat      = 'Non-Revenue'.
+              lv_itm_nonrev  = <cr>-hsl.
             ENDIF.
-            " Proportional share of debit-side SLS amounts
+
+            " Proportional SLS allocation
             IF lv_rev_nonrev_total <> 0.
-              lv_share       = <cr>-hsl / lv_rev_nonrev_total.
-              lv_itm_notqvat = lv_notq_vat   * lv_share.
-              lv_itm_exempt  = lv_exempt      * lv_share.
-              lv_itm_zerort  = lv_zero_rated  * lv_share.
-              lv_itm_taxnet  = lv_taxable_net * lv_share.
-              lv_itm_slvat   = lv_vat_amt     * lv_share.
-              lv_itm_totsls  = lv_itm_exempt + lv_itm_zerort + lv_itm_taxnet.
-              lv_itm_grxtax  = lv_itm_totsls.
+              lv_share          = <cr>-hsl / lv_rev_nonrev_total.
+              lv_itm_notqvat    = lv_notq_vat    * lv_share.
+              lv_itm_exempt     = lv_exempt       * lv_share.
+              lv_itm_zerort     = lv_zero_rated   * lv_share.
+              lv_itm_taxnet     = lv_taxable_net  * lv_share.
+              lv_itm_slvat      = lv_vat_amt      * lv_share.
+              lv_itm_totsls     = lv_itm_exempt + lv_itm_zerort + lv_itm_taxnet.
+              lv_itm_grxtax     = lv_itm_totsls.  " output VAT handled by OVT lines
             ENDIF.
           ENDIF.
         ENDIF.
 
+        " Append Item Row
+        " Books-of-Accounts amounts (credit side) are negated via lv_cr_sign so that
+        " credits display as negative vs the positive debit total on the Header Row.
+        " SLS proportional amounts (notq_vat, exempt, etc.) come from the debit side
+        " tax accumulation and remain positive.
         APPEND VALUE ty_output(
           row_type      = 'Item Row'
           budat         = lv_budat_fmt
@@ -554,24 +584,24 @@ FORM process_data
           reg_name      = lv_name
           address1      = lv_addr1
           address2      = lv_addr2
-          total_amt     = <cr>-hsl
-          non_revenue   = lv_itm_nonrev
-          revenue       = lv_itm_rev
-          nft           = lv_itm_nft
-          lft           = lv_itm_lft
-          vat_amt       = lv_itm_vat
-          discount      = lv_itm_disc
+          total_amt     = <cr>-hsl      * lv_cr_sign   " credit = negative
+          non_revenue   = lv_itm_nonrev * lv_cr_sign
+          revenue       = lv_itm_rev    * lv_cr_sign
+          nft           = lv_itm_nft    * lv_cr_sign
+          lft           = lv_itm_lft    * lv_cr_sign
+          vat_amt       = lv_itm_vat    * lv_cr_sign
+          discount      = lv_itm_disc   * lv_cr_sign
           bktxt         = <hdr>-bktxt
           reference     = lv_sgtxt
           belnr         = <hdr>-belnr
           invoice_no    = lv_inv_no
           dm_no         = lv_dm_no
-          notq_vat      = lv_itm_notqvat
+          notq_vat      = lv_itm_notqvat               " positive (from debit tax codes)
           exempt        = lv_itm_exempt
           zero_rated    = lv_itm_zerort
           taxable_net   = lv_itm_taxnet
           sl_vat        = lv_itm_slvat
-          output_vat    = lv_itm_outvat
+          output_vat    = lv_itm_outvat * lv_cr_sign   " credit = negative
           total_sales   = lv_itm_totsls
           gross_tax     = lv_itm_grxtax
           ar_gl_no      = lv_ar_gl
@@ -589,12 +619,14 @@ FORM process_data
           bupla         = <hdr>-bupla
           sales_office  = lv_vkbur
           prctr         = <cr>-prctr
-        ) TO gt_output.
+        ) TO gt_output_itm.
 
-      ENDLOOP.
+      ENDLOOP.   " per credit line
 
-    ELSE.  " SJ or SL: one flat row per document (row_type blank)
-      APPEND VALUE ty_output(
+    ELSEIF gv_mode = gc_sj OR gv_mode = gc_sl.
+
+      " One flat row per document (row_type blank -- not shown in SJ/SL ALV)
+      DATA(ls_sum) = VALUE ty_output(
         budat         = lv_budat_fmt
         tin           = lv_tin
         reg_name      = lv_name
@@ -620,25 +652,35 @@ FORM process_data
         output_vat    = lv_output_vat
         total_sales   = lv_total_sales
         gross_tax     = lv_gross_tax
-        ar_gl_no      = lv_ar_gl
-        ar_gl_name    = lv_ar_gl_nm
+        bupla         = <hdr>-bupla
+        prctr         = lv_prctr
+        sales_office  = lv_vkbur
+        bp_code       = lv_kunnr
+        bukrs         = <hdr>-bukrs
+        document_type = <hdr>-blart
         inv_dm_date   = lv_bldat_fmt
         bill_period   = lv_bill_period
         vat_code      = lv_mwskz
         wht_code      = space
-        bp_code       = lv_kunnr
-        bukrs         = <hdr>-bukrs
-        bupla         = <hdr>-bupla
-        sales_office  = lv_vkbur
-        prctr         = lv_prctr
-        document_type = <hdr>-blart
-      ) TO gt_output.
+        ar_gl_no      = lv_ar_gl
+        ar_gl_name    = lv_ar_gl_nm ).
+      APPEND ls_sum TO gt_output.
+
     ENDIF.
 
-  ENDLOOP.   " GROUP BY document
+    CLEAR: lv_kunnr, lv_ar_gl, lv_ar_gl_nm, lv_tin, lv_name,
+           lv_addr1, lv_addr2, lv_vkbur, lv_sgtxt, lv_bschl,
+           lv_mwskz, lv_prctr,
+           lv_total_amt, lv_non_rev, lv_revenue, lv_nft, lv_lft,
+           lv_vat_amt, lv_discount, lv_notq_vat, lv_exempt,
+           lv_zero_rated, lv_taxable_net, lv_output_vat,
+           lv_inv_no, lv_dm_no, lv_budat_fmt, lv_bldat_fmt,
+           lv_bill_period, lv_total_sales, lv_gross_tax,
+           lv_rev_nonrev_total, lt_cr_lines.
+
+  ENDLOOP.   " end GROUP BY document
 
 ENDFORM.
-
 
 *======================================================================*
 * FORM: display_alv
